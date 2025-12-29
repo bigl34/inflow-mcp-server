@@ -75,13 +75,13 @@ export function registerProductTools(server: McpServer, client: InflowClient): v
   // Get Product
   server.tool(
     'get_product',
-    'Get detailed information about a specific product by ID',
+    'Get detailed information about a specific product by ID. Use include=itemBoms to get the bill of materials (components needed to manufacture this product).',
     {
       productId: z.string().describe('The product ID'),
       include: z
         .array(z.string())
         .optional()
-        .describe('Related data to include (e.g., category, customFields)'),
+        .describe('Related data to include. Options: category, customFields, itemBoms (bill of materials)'),
     },
     async (args) => {
       const product = await client.get<Product>(`/products/${args.productId}`, {
@@ -212,6 +212,87 @@ export function registerProductTools(server: McpServer, client: InflowClient): v
           {
             type: 'text',
             text: JSON.stringify(summaries, null, 2),
+          },
+        ],
+      };
+    }
+  );
+
+  // Get Bill of Materials
+  server.tool(
+    'get_bill_of_materials',
+    'Get the bill of materials (BOM) for a manufacturable product. Returns the list of component products and quantities required to manufacture this product. Only products with isManufacturable=true have a BOM.',
+    {
+      productId: z.string().describe('The product ID to get the BOM for'),
+    },
+    async (args) => {
+      const product = await client.get<Product>(`/products/${args.productId}`, {
+        include: ['itemBoms'],
+      });
+
+      if (!product.isManufacturable) {
+        return {
+          content: [
+            {
+              type: 'text',
+              text: JSON.stringify({
+                productId: args.productId,
+                productName: product.name,
+                isManufacturable: false,
+                message: 'This product is not manufacturable and has no bill of materials.',
+                itemBoms: [],
+              }, null, 2),
+            },
+          ],
+        };
+      }
+
+      // If we have BOMs, fetch the child product names
+      const itemBoms = product.itemBoms || [];
+      const childProductIds = itemBoms
+        .map((bom) => bom.childProductId)
+        .filter((id): id is string => !!id);
+
+      // Fetch child product details if we have any
+      let childProducts: Record<string, Product> = {};
+      if (childProductIds.length > 0) {
+        // Fetch each child product to get names
+        const childProductPromises = childProductIds.map((id) =>
+          client.get<Product>(`/products/${id}`).catch(() => null)
+        );
+        const results = await Promise.all(childProductPromises);
+        results.forEach((p) => {
+          if (p) {
+            // API returns productId, but we also check id for compatibility
+            const productId = (p as any).productId || p.id;
+            if (productId) {
+              childProducts[productId] = p;
+            }
+          }
+        });
+      }
+
+      // Build enriched BOM response
+      const enrichedBoms = itemBoms.map((bom) => ({
+        childProductId: bom.childProductId,
+        childProductName: bom.childProductId ? childProducts[bom.childProductId]?.name : undefined,
+        childProductSku: bom.childProductId ? childProducts[bom.childProductId]?.sku : undefined,
+        quantity: bom.quantity?.standardQuantity || '1',
+        uom: bom.quantity?.uom || '',
+      }));
+
+      return {
+        content: [
+          {
+            type: 'text',
+            text: JSON.stringify({
+              productId: args.productId,
+              productName: product.name,
+              productSku: product.sku,
+              isManufacturable: true,
+              componentCount: enrichedBoms.length,
+              components: enrichedBoms,
+            }, null, 2),
           },
         ],
       };

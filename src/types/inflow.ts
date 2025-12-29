@@ -50,6 +50,7 @@ export interface Product {
   categoryId?: string;
   isActive?: boolean;
   isSerialized?: boolean;
+  isManufacturable?: boolean;
   cost?: number;
   defaultPrice?: number;
   reorderPoint?: number;
@@ -58,9 +59,28 @@ export interface Product {
   weight?: number;
   weightUnit?: string;
   customFields?: Record<string, unknown>;
+  itemBoms?: ItemBom[];
   timestamp?: string;
   createdDate?: string;
   modifiedDate?: string;
+}
+
+// Bill of Materials types
+export interface ItemBom {
+  itemBomId?: string;
+  productId?: string;
+  product?: Product;
+  childProductId?: string;
+  childProduct?: Product;
+  quantity?: QuantityWithUom;
+  timestamp?: string;
+}
+
+export interface QuantityWithUom {
+  standardQuantity?: string;
+  uomQuantity?: string;
+  uom?: string;
+  serialNumbers?: string[];
 }
 
 export interface ProductDimensions {
