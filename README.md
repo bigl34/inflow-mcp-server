@@ -88,10 +88,11 @@ Add to your Claude Desktop configuration file:
 | Tool | Description |
 |------|-------------|
 | `list_products` | Search and filter products |
-| `get_product` | Get product details by ID |
+| `get_product` | Get product details by ID (use `include=itemBoms` for BOM) |
 | `upsert_product` | Create or update a product |
 | `get_inventory_summary` | Get stock levels across locations |
 | `get_inventory_summaries_batch` | Batch get stock levels (max 100) |
+| `get_bill_of_materials` | Get BOM components for a manufacturable product |
 
 ### Sales Orders
 
