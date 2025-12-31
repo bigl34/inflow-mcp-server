@@ -125,7 +125,7 @@ export interface ProductFilter {
 
 // Category types
 export interface Category {
-  id?: string;
+  categoryId?: string;
   name: string;
   parentCategoryId?: string;
   parentCategory?: Category;

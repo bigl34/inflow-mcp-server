@@ -8,6 +8,7 @@ import type {
   ProductSummary,
   ProductFilter,
   PaginationParams,
+  Category,
 } from '../types/inflow.js';
 
 export function registerProductTools(server: McpServer, client: InflowClient): void {
@@ -21,6 +22,7 @@ export function registerProductTools(server: McpServer, client: InflowClient): v
       barcode: z.string().optional().describe('Filter by barcode'),
       sku: z.string().optional().describe('Filter by SKU'),
       categoryId: z.string().optional().describe('Filter by category ID'),
+      categoryName: z.string().optional().describe('Filter by category name (case-insensitive, resolves to categoryId)'),
       isActive: z.boolean().optional().describe('Filter by active status'),
       smart: z.string().optional().describe('Smart search across multiple fields (name, description, SKU, barcode)'),
       include: z
@@ -34,12 +36,28 @@ export function registerProductTools(server: McpServer, client: InflowClient): v
       includeCount: z.boolean().optional().describe('Include total record count in response'),
     },
     async (args) => {
+      // Resolve categoryName to categoryId if provided
+      let resolvedCategoryId = args.categoryId;
+      if (args.categoryName && !args.categoryId) {
+        const categories = await client.getList<Category>('/categories', {
+          pagination: { count: 100 }
+        });
+        const match = categories.data.find((c: Category) =>
+          c.name?.toLowerCase() === args.categoryName?.toLowerCase()
+        );
+        if (match?.categoryId) {
+          resolvedCategoryId = match.categoryId;
+        } else {
+          throw new Error(`Category not found: ${args.categoryName}`);
+        }
+      }
+
       const filters: ProductFilter = {};
       if (args.name) filters.name = args.name;
       if (args.description) filters.description = args.description;
       if (args.barcode) filters.barcode = args.barcode;
       if (args.sku) filters.sku = args.sku;
-      if (args.categoryId) filters.categoryId = args.categoryId;
+      if (resolvedCategoryId) filters.categoryId = resolvedCategoryId;
       if (args.isActive !== undefined) filters.isActive = args.isActive;
       if (args.smart) filters.smart = args.smart;
 

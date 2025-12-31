@@ -216,6 +216,8 @@ Large result sets are paginated. Use `skip` and `count` parameters:
 - `count`: Number of records to return (max 100)
 - `skip`: Number of records to skip
 
+**Note:** The default page size is 20 records. Always specify `count` when you need all records.
+
 ### Sorting
 
 All list operations support sorting:
