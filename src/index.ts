@@ -31,6 +31,7 @@ import { registerPurchaseOrderTools } from './tools/purchase-orders.js';
 import { registerCustomerTools } from './tools/customers.js';
 import { registerInventoryTools } from './tools/inventory.js';
 import { registerReferenceTools } from './tools/reference.js';
+import { registerSerialTools } from './tools/serials.js';
 
 async function main(): Promise<void> {
   // Load configuration from environment variables
@@ -52,6 +53,7 @@ async function main(): Promise<void> {
   registerCustomerTools(server, client);
   registerInventoryTools(server, client);
   registerReferenceTools(server, client);
+  registerSerialTools(server, client);
 
   // Set up the stdio transport
   const transport = new StdioServerTransport();

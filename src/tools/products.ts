@@ -28,7 +28,8 @@ export function registerProductTools(server: McpServer, client: InflowClient): v
       include: z
         .array(z.string())
         .optional()
-        .describe('Related data to include (e.g., category, customFields)'),
+        .describe('Related data to include. Options: category, customFields, inventoryLines (serial numbers). Use filter trackSerials=true to get only serialized products.'),
+      trackSerials: z.boolean().optional().describe('Filter to only return products that track serial numbers (VINs)'),
       skip: z.number().optional().describe('Number of records to skip'),
       count: z.number().optional().describe('Number of records to return (max 100)'),
       sort: z.string().optional().describe('Property to sort by (e.g., name, sku, modifiedDate)'),
@@ -60,6 +61,7 @@ export function registerProductTools(server: McpServer, client: InflowClient): v
       if (resolvedCategoryId) filters.categoryId = resolvedCategoryId;
       if (args.isActive !== undefined) filters.isActive = args.isActive;
       if (args.smart) filters.smart = args.smart;
+      if (args.trackSerials !== undefined) (filters as any).trackSerials = args.trackSerials;
 
       const pagination: PaginationParams = {};
       if (args.skip !== undefined) pagination.skip = args.skip;
@@ -99,7 +101,7 @@ export function registerProductTools(server: McpServer, client: InflowClient): v
       include: z
         .array(z.string())
         .optional()
-        .describe('Related data to include. Options: category, customFields, itemBoms (bill of materials)'),
+        .describe('Related data to include. Options: category, customFields, itemBoms (bill of materials), inventoryLines (serial numbers/VINs for trackSerials products)'),
     },
     async (args) => {
       const product = await client.get<Product>(`/products/${args.productId}`, {
