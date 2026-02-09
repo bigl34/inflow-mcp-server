@@ -1,0 +1,15 @@
+node_modules/
+dist/
+build/
+.env
+.env.*
+config.json
+*.secret
+*.key
+*.pem
+*.crt
+*.p12
+.npmrc
+*.log
+*.tmp
+data/
