@@ -139,13 +139,18 @@ export function registerCustomerTools(server: McpServer, client: InflowClient): 
       taxingSchemeId: z.string().optional().describe('Taxing scheme ID'),
       currencyCode: z.string().optional().describe('Currency code'),
       contacts: z.array(contactSchema).optional().describe('Contact persons'),
+      remarks: z.string().optional().describe('Notes/remarks'),
       customFields: z.record(z.unknown()).optional().describe('Custom field values'),
       isActive: z.boolean().optional().describe('Whether customer is active'),
       timestamp: z.string().optional().describe('Timestamp for concurrency control'),
     },
     async (args) => {
+      // inFlow API requires customerId for both create and update
+      // Generate a new UUID if not provided (for creates)
+      const customerId = args.id || randomUUID();
+
       const customer: Customer = {
-        id: args.id,
+        customerId: customerId,
         name: args.name,
         email: args.email,
         phone: args.phone,
@@ -158,11 +163,13 @@ export function registerCustomerTools(server: McpServer, client: InflowClient): 
         taxingSchemeId: args.taxingSchemeId,
         currencyCode: args.currencyCode,
         contacts: args.contacts as Contact[],
+        remarks: args.remarks,
         customFields: args.customFields,
         isActive: args.isActive,
         timestamp: args.timestamp,
       };
 
+      // inFlow API uses PUT for both create and update with customerId in body
       const result = await client.put<Customer>('/customers', customer);
 
       return {

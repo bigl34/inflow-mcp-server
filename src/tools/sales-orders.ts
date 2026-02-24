@@ -3,9 +3,10 @@
 import { z } from 'zod';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import type { InflowClient } from '../client/inflow.js';
+import { randomUUID } from 'node:crypto';
 import type {
   SalesOrder,
-  SalesOrderItem,
+  SalesOrderLine,
   SalesOrderFilter,
   PaginationParams,
   Address,
@@ -58,7 +59,7 @@ export function registerSalesOrderTools(server: McpServer, client: InflowClient)
       include: z
         .array(z.string())
         .optional()
-        .describe('Related data to include (e.g., customer, items, items.product)'),
+        .describe('Related data to include (e.g., customer, lines, lines.product)'),
       skip: z.number().optional().describe('Number of records to skip'),
       count: z.number().optional().describe('Number of records to return (max 100)'),
       sort: z.string().optional().describe('Property to sort by (e.g., orderDate, orderNumber)'),
@@ -117,7 +118,7 @@ export function registerSalesOrderTools(server: McpServer, client: InflowClient)
       include: z
         .array(z.string())
         .optional()
-        .describe('Related data to include (e.g., customer, location, items, items.product)'),
+        .describe('Related data to include (e.g., customer, location, lines, lines.product)'),
     },
     async (args) => {
       const order = await client.get<SalesOrder>(`/sales-orders/${args.salesOrderId}`, {
@@ -158,8 +159,32 @@ export function registerSalesOrderTools(server: McpServer, client: InflowClient)
       timestamp: z.string().optional().describe('Timestamp for concurrency control'),
     },
     async (args) => {
+      // inFlow API requires salesOrderId for both create and update
+      // Generate a new UUID if not provided (for creates)
+      const salesOrderId = args.id || randomUUID();
+
+      // Transform items to lines with correct inFlow API format:
+      // - quantity must be { standardQuantity, uomQuantity } object
+      // - serialNumbers go inside the quantity object
+      // - each line needs salesOrderLineId GUID
+      const lines = args.items?.map((item) => ({
+        salesOrderLineId: item.id || randomUUID(),
+        productId: item.productId,
+        description: item.description,
+        quantity: {
+          standardQuantity: item.quantity,
+          uomQuantity: item.quantity,
+          serialNumbers: item.serialNumbers,
+        },
+        unitPrice: item.unitPrice,
+        discount: item.discount,
+        discountType: item.discountType,
+        taxCodeId: item.taxCodeId,
+        sublocation: item.sublocation,
+      }));
+
       const order: SalesOrder = {
-        id: args.id,
+        salesOrderId: salesOrderId,
         orderNumber: args.orderNumber,
         orderDate: args.orderDate,
         requiredDate: args.requiredDate,
@@ -171,12 +196,13 @@ export function registerSalesOrderTools(server: McpServer, client: InflowClient)
         taxingSchemeId: args.taxingSchemeId,
         paymentTermsId: args.paymentTermsId,
         currencyCode: args.currencyCode,
-        items: args.items as SalesOrderItem[],
-        remarks: args.remarks,
+        lines: lines as SalesOrderLine[],
+        orderRemarks: args.remarks,
         customFields: args.customFields,
         timestamp: args.timestamp,
       };
 
+      // inFlow API uses PUT for both create and update with salesOrderId in body
       const result = await client.put<SalesOrder>('/sales-orders', order);
 
       return {
