@@ -47,17 +47,20 @@ export function registerSerialTools(server: McpServer, client: InflowClient): vo
       );
 
       const serials: SerialEntry[] = [];
-      for (const line of (order as any).lines || []) {
-        const serialNumbers = line.quantity?.serialNumbers || [];
+      for (const line of order.lines || []) {
+        const qty = line.quantity;
+        const serialNumbers = typeof qty === 'object' && qty !== null
+          ? (qty.serialNumbers || [])
+          : [];
         for (const serial of serialNumbers) {
           serials.push({
             serial: serial,
             orderType: 'sales',
-            orderId: (order as any).salesOrderId,
+            orderId: order.salesOrderId || '',
             orderNumber: order.orderNumber || '',
             orderDate: order.orderDate || '',
-            productId: line.productId,
-            lineId: line.salesOrderLineId,
+            productId: line.productId || '',
+            lineId: line.salesOrderLineId || '',
           });
         }
       }
@@ -68,10 +71,10 @@ export function registerSerialTools(server: McpServer, client: InflowClient): vo
             type: 'text',
             text: JSON.stringify(
               {
-                salesOrderId: (order as any).salesOrderId,
+                salesOrderId: order.salesOrderId,
                 orderNumber: order.orderNumber,
                 orderDate: order.orderDate,
-                status: (order as any).inventoryStatus,
+                status: order.inventoryStatus,
                 serialCount: serials.length,
                 serials,
               },
@@ -98,17 +101,20 @@ export function registerSerialTools(server: McpServer, client: InflowClient): vo
       );
 
       const serials: SerialEntry[] = [];
-      for (const line of (order as any).lines || []) {
-        const serialNumbers = line.quantity?.serialNumbers || [];
+      for (const line of order.lines || []) {
+        const qty = line.quantity;
+        const serialNumbers = typeof qty === 'object' && qty !== null
+          ? (qty.serialNumbers || [])
+          : [];
         for (const serial of serialNumbers) {
           serials.push({
             serial: serial,
             orderType: 'purchase',
-            orderId: (order as any).purchaseOrderId,
+            orderId: order.purchaseOrderId || '',
             orderNumber: order.orderNumber || '',
             orderDate: order.orderDate || '',
-            productId: line.productId,
-            lineId: line.purchaseOrderLineId,
+            productId: line.productId || '',
+            lineId: line.purchaseOrderLineId || '',
           });
         }
       }
@@ -119,10 +125,10 @@ export function registerSerialTools(server: McpServer, client: InflowClient): vo
             type: 'text',
             text: JSON.stringify(
               {
-                purchaseOrderId: (order as any).purchaseOrderId,
+                purchaseOrderId: order.purchaseOrderId,
                 orderNumber: order.orderNumber,
                 orderDate: order.orderDate,
-                status: (order as any).inventoryStatus,
+                status: order.inventoryStatus,
                 serialCount: serials.length,
                 serials,
               },
@@ -162,8 +168,11 @@ export function registerSerialTools(server: McpServer, client: InflowClient): vo
 
         for (const order of result.data) {
           ordersSearched++;
-          for (const line of (order as any).lines || []) {
-            const serialNumbers = line.quantity?.serialNumbers || [];
+          for (const line of order.lines || []) {
+            const qty = line.quantity;
+            const serialNumbers = typeof qty === 'object' && qty !== null
+              ? (qty.serialNumbers || [])
+              : [];
             for (const serial of serialNumbers) {
               if (serial.trim().toUpperCase() === searchSerial) {
                 return {
@@ -174,7 +183,7 @@ export function registerSerialTools(server: McpServer, client: InflowClient): vo
                         {
                           found: true,
                           serial: searchSerial,
-                          salesOrderId: (order as any).salesOrderId,
+                          salesOrderId: order.salesOrderId,
                           orderNumber: order.orderNumber,
                           orderDate: order.orderDate,
                           productId: line.productId,
@@ -247,20 +256,23 @@ export function registerSerialTools(server: McpServer, client: InflowClient): vo
 
         for (const order of result.data) {
           ordersFetched++;
-          for (const line of (order as any).lines || []) {
+          for (const line of order.lines || []) {
             // Filter by product if specified
             if (args.productId && line.productId !== args.productId) continue;
 
-            const serialNumbers = line.quantity?.serialNumbers || [];
+            const qty = line.quantity;
+            const serialNumbers = typeof qty === 'object' && qty !== null
+              ? (qty.serialNumbers || [])
+              : [];
             for (const serial of serialNumbers) {
               allSerials.push({
                 serial: serial,
                 orderType: 'sales',
-                orderId: (order as any).salesOrderId,
+                orderId: order.salesOrderId || '',
                 orderNumber: order.orderNumber || '',
                 orderDate: order.orderDate || '',
-                productId: line.productId,
-                lineId: line.salesOrderLineId,
+                productId: line.productId || '',
+                lineId: line.salesOrderLineId || '',
               });
             }
           }
@@ -307,12 +319,12 @@ export function registerSerialTools(server: McpServer, client: InflowClient): vo
         { include: ['inventoryLines'] }
       );
 
-      const inventoryLines = (product as any).inventoryLines || [];
+      const inventoryLines = product.inventoryLines || [];
       const serials: ProductSerialEntry[] = inventoryLines
-        .filter((line: any) => line.serial)
-        .map((line: any) => ({
-          serial: line.serial,
-          productId: (product as any).productId,
+        .filter((line) => line.serial)
+        .map((line) => ({
+          serial: line.serial || '',
+          productId: product.productId || '',
           productName: product.name || '',
           locationId: line.locationId || '',
           quantityOnHand: line.quantityOnHand || '0',
@@ -326,9 +338,9 @@ export function registerSerialTools(server: McpServer, client: InflowClient): vo
             type: 'text',
             text: JSON.stringify(
               {
-                productId: (product as any).productId,
+                productId: product.productId,
                 productName: product.name,
-                trackSerials: (product as any).trackSerials,
+                trackSerials: product.trackSerials,
                 serialCount: serials.length,
                 inStockCount: serials.filter((s) => s.inStock).length,
                 soldCount: serials.filter((s) => !s.inStock).length,
@@ -366,14 +378,14 @@ export function registerSerialTools(server: McpServer, client: InflowClient): vo
 
       while (productsFetched < maxProducts) {
         const result = await client.getList<Product>('/products', {
-          filters: { trackSerials: true } as any,
+          filters: { trackSerials: true },
           pagination: { skip, count: Math.min(pageSize, maxProducts - productsFetched) } as PaginationParams,
           include: ['inventoryLines'],
         });
 
         for (const product of result.data) {
           productsFetched++;
-          const inventoryLines = (product as any).inventoryLines || [];
+          const inventoryLines = product.inventoryLines || [];
 
           for (const line of inventoryLines) {
             if (!line.serial) continue;
@@ -385,7 +397,7 @@ export function registerSerialTools(server: McpServer, client: InflowClient): vo
 
             allSerials.push({
               serial: line.serial,
-              productId: (product as any).productId,
+              productId: product.productId || '',
               productName: product.name || '',
               locationId: line.locationId || '',
               quantityOnHand: line.quantityOnHand || '0',

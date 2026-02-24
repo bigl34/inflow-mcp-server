@@ -259,7 +259,7 @@ list_sales_orders with smart="SO-2025"  // Searches order fields
 Use the `include` parameter to fetch related data:
 
 ```
-get_sales_order with include=["customer", "items", "items.product"]
+get_sales_order with include=["customer", "lines", "lines.product"]
 ```
 
 ### Concurrency Control

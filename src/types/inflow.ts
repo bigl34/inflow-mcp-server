@@ -41,7 +41,7 @@ export interface PaginatedResponse<T> {
 
 // Product types
 export interface Product {
-  id?: string;
+  productId?: string;
   name: string;
   description?: string;
   barcode?: string;
@@ -51,6 +51,7 @@ export interface Product {
   isActive?: boolean;
   isSerialized?: boolean;
   isManufacturable?: boolean;
+  trackSerials?: boolean;
   cost?: number;
   defaultPrice?: number;
   reorderPoint?: number;
@@ -60,9 +61,17 @@ export interface Product {
   weightUnit?: string;
   customFields?: Record<string, unknown>;
   itemBoms?: ItemBom[];
+  inventoryLines?: InventoryLine[];
   timestamp?: string;
   createdDate?: string;
   modifiedDate?: string;
+}
+
+export interface InventoryLine {
+  serial?: string;
+  locationId?: string;
+  quantityOnHand?: string;
+  sublocation?: string;
 }
 
 // Bill of Materials types
@@ -120,6 +129,7 @@ export interface ProductFilter {
   sku?: string;
   categoryId?: string;
   isActive?: boolean;
+  trackSerials?: boolean;
   smart?: string;
 }
 
@@ -153,7 +163,7 @@ export interface Address {
 
 // Customer types
 export interface Customer {
-  id?: string;
+  customerId?: string;
   name: string;
   email?: string;
   phone?: string;
@@ -168,6 +178,7 @@ export interface Customer {
   taxingSchemeId?: string;
   currencyCode?: string;
   contacts?: Contact[];
+  remarks?: string;
   customFields?: Record<string, unknown>;
   isActive?: boolean;
   timestamp?: string;
@@ -223,7 +234,7 @@ export interface VendorFilter {
 
 // Sales Order types
 export interface SalesOrder {
-  id?: string;
+  salesOrderId?: string;
   orderNumber?: string;
   orderDate?: string;
   requiredDate?: string;
@@ -232,6 +243,7 @@ export interface SalesOrder {
   locationId?: string;
   location?: Location;
   status?: OrderStatus;
+  inventoryStatus?: string;
   billingAddress?: Address;
   shippingAddress?: Address;
   pricingSchemeId?: string;
@@ -244,20 +256,25 @@ export interface SalesOrder {
   total?: number;
   amountPaid?: number;
   balance?: number;
-  items?: SalesOrderItem[];
-  remarks?: string;
+  lines?: SalesOrderLine[];
+  orderRemarks?: string;
   customFields?: Record<string, unknown>;
   timestamp?: string;
   createdDate?: string;
   modifiedDate?: string;
 }
 
-export interface SalesOrderItem {
-  id?: string;
+export interface SalesOrderLine {
+  salesOrderLineId?: string;
   productId?: string;
   product?: Product;
   description?: string;
-  quantity: number;
+  quantity: number | {
+    standardQuantity: number;
+    uomQuantity: number;
+    uom?: string;
+    serialNumbers?: string[];
+  };
   quantityPicked?: number;
   quantityShipped?: number;
   unitPrice?: number;
@@ -265,7 +282,6 @@ export interface SalesOrderItem {
   discountType?: 'Percent' | 'Amount';
   taxCodeId?: string;
   subtotal?: number;
-  serialNumbers?: string[];
   sublocation?: string;
 }
 
@@ -307,6 +323,7 @@ export interface PurchaseOrder {
   locationId?: string;
   location?: Location;
   status?: PurchaseOrderStatus;
+  inventoryStatus?: string;
   shippingAddress?: Address;
   currencyCode?: string;
   exchangeRate?: number;
@@ -316,7 +333,7 @@ export interface PurchaseOrder {
   lines?: PurchaseOrderItem[];
   receiveLines?: PurchaseOrderReceiveLine[];
   unstockLines?: unknown[];
-  remarks?: string;
+  orderRemarks?: string;
   customFields?: Record<string, unknown>;
   timestamp?: string;
   createdDate?: string;
@@ -337,7 +354,6 @@ export interface PurchaseOrderItem {
   unitPrice?: number;
   taxCodeId?: string;
   subtotal?: number;
-  serialNumbers?: string[];
   sublocation?: string;
 }
 
@@ -383,12 +399,12 @@ export interface PurchaseOrderFilter {
 
 // Stock Adjustment types
 export interface StockAdjustment {
-  id?: string;
+  stockAdjustmentId?: string;
   adjustmentNumber?: string;
-  adjustmentDate?: string;
+  date?: string;
   locationId?: string;
   location?: Location;
-  reasonId?: string;
+  adjustmentReasonId?: string;
   reason?: AdjustmentReason;
   status?: 'Open' | 'Completed' | 'Cancelled';
   items?: StockAdjustmentItem[];
@@ -419,7 +435,7 @@ export interface StockAdjustmentFilter {
   [key: string]: string | number | boolean | undefined;
   adjustmentNumber?: string;
   locationId?: string;
-  reasonId?: string;
+  adjustmentReasonId?: string;
   status?: 'Open' | 'Completed' | 'Cancelled';
   adjustmentDateFrom?: string;
   adjustmentDateTo?: string;
@@ -427,7 +443,7 @@ export interface StockAdjustmentFilter {
 
 // Stock Transfer types
 export interface StockTransfer {
-  id?: string;
+  stockTransferId?: string;
   transferNumber?: string;
   transferDate?: string;
   fromLocationId?: string;
@@ -467,12 +483,17 @@ export interface StockTransferFilter {
 
 // Stock Count types
 export interface StockCount {
-  id?: string;
-  countNumber?: string;
+  stockCountId?: string;
+  stockCountNumber?: string;
   countDate?: string;
   locationId?: string;
   location?: Location;
   status?: 'Open' | 'InProgress' | 'Completed' | 'Cancelled';
+  isCancelled?: boolean;
+  isCompleted?: boolean;
+  isPrepared?: boolean;
+  isReviewed?: boolean;
+  isStarted?: boolean;
   countSheets?: CountSheet[];
   remarks?: string;
   timestamp?: string;
@@ -498,45 +519,43 @@ export interface CountSheetItem {
 
 // Manufacturing Order types
 export interface ManufacturingOrder {
-  id?: string;
-  orderNumber?: string;
+  manufacturingOrderId?: string;
+  manufacturingOrderNumber?: string;
   orderDate?: string;
-  requiredDate?: string;
+  dueDate?: string;
   locationId?: string;
   location?: Location;
-  status?: ManufacturingOrderStatus;
-  outputProductId?: string;
-  outputProduct?: Product;
-  outputQuantity?: number;
-  quantityCompleted?: number;
-  inputItems?: ManufacturingInputItem[];
+  status?: string;
+  isCancelled?: boolean;
+  isCompleted?: boolean;
+  primaryFinishedProductId?: string;
+  lines?: ManufacturingOrderLine[];
   remarks?: string;
+  pickRemarks?: string;
+  putAwayRemarks?: string;
   customFields?: Record<string, unknown>;
   timestamp?: string;
   createdDate?: string;
   modifiedDate?: string;
 }
 
-export interface ManufacturingInputItem {
+export interface ManufacturingOrderLine {
+  manufacturingOrderLineId?: string;
+  manufacturingOrderId?: string;
+  parentManufacturingOrderLineId?: string | null;
   productId?: string;
-  product?: Product;
-  quantity: number;
-  quantityUsed?: number;
-  sublocation?: string;
+  description?: string;
+  quantity?: QuantityWithUom;
+  manufacturingOrderLines?: ManufacturingOrderLine[];
+  timestamp?: string;
 }
 
-export type ManufacturingOrderStatus =
-  | 'Open'
-  | 'InProgress'
-  | 'Completed'
-  | 'Cancelled';
-
 export interface ManufacturingOrderFilter {
-  [key: string]: string | number | boolean | ManufacturingOrderStatus | undefined;
-  orderNumber?: string;
+  [key: string]: string | number | boolean | undefined;
+  manufacturingOrderNumber?: string;
   locationId?: string;
-  status?: ManufacturingOrderStatus;
-  outputProductId?: string;
+  status?: string;
+  primaryFinishedProductId?: string;
   orderDateFrom?: string;
   orderDateTo?: string;
 }

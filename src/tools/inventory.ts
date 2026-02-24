@@ -2,6 +2,7 @@
 // Includes: Stock Adjustments, Stock Transfers, Stock Counts, Manufacturing Orders
 
 import { z } from 'zod';
+import { randomUUID } from 'crypto';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import type { InflowClient } from '../client/inflow.js';
 import type {
@@ -13,7 +14,7 @@ import type {
   StockTransferFilter,
   StockCount,
   ManufacturingOrder,
-  ManufacturingInputItem,
+  ManufacturingOrderLine,
   ManufacturingOrderFilter,
   PaginationParams,
 } from '../types/inflow.js';
@@ -41,6 +42,32 @@ const manufacturingInputItemSchema = z.object({
   quantity: z.number(),
   sublocation: z.string().optional(),
 });
+
+function buildManufacturingOrderLines(
+  outputProductId: string,
+  outputQuantity: number,
+  inputItems?: Array<{ productId: string; quantity: number; sublocation?: string }>
+): ManufacturingOrderLine[] {
+  const childLines: ManufacturingOrderLine[] = (inputItems || []).map(item => ({
+    manufacturingOrderLineId: randomUUID(),
+    productId: item.productId,
+    quantity: {
+      standardQuantity: String(item.quantity),
+      uomQuantity: String(item.quantity),
+    },
+  }));
+
+  return [{
+    manufacturingOrderLineId: randomUUID(),
+    productId: outputProductId,
+    parentManufacturingOrderLineId: null,
+    quantity: {
+      standardQuantity: String(outputQuantity),
+      uomQuantity: String(outputQuantity),
+    },
+    manufacturingOrderLines: childLines,
+  }];
+}
 
 export function registerInventoryTools(server: McpServer, client: InflowClient): void {
   // ==================== STOCK ADJUSTMENTS ====================
@@ -70,7 +97,7 @@ export function registerInventoryTools(server: McpServer, client: InflowClient):
       const filters: StockAdjustmentFilter = {};
       if (args.adjustmentNumber) filters.adjustmentNumber = args.adjustmentNumber;
       if (args.locationId) filters.locationId = args.locationId;
-      if (args.reasonId) filters.reasonId = args.reasonId;
+      if (args.reasonId) filters.adjustmentReasonId = args.reasonId;
       if (args.status) filters.status = args.status;
       if (args.adjustmentDateFrom) filters.adjustmentDateFrom = args.adjustmentDateFrom;
       if (args.adjustmentDateTo) filters.adjustmentDateTo = args.adjustmentDateTo;
@@ -134,11 +161,15 @@ export function registerInventoryTools(server: McpServer, client: InflowClient):
       timestamp: z.string().optional(),
     },
     async (args) => {
+      // inFlow API requires stockAdjustmentId for both create and update
+      // Generate a new UUID if not provided (for creates)
+      const stockAdjustmentId = args.id || randomUUID();
+
       const adjustment: StockAdjustment = {
-        id: args.id,
-        adjustmentDate: args.adjustmentDate,
+        stockAdjustmentId: stockAdjustmentId,
+        date: args.adjustmentDate,
         locationId: args.locationId,
-        reasonId: args.reasonId,
+        adjustmentReasonId: args.reasonId,
         items: args.items as StockAdjustmentItem[],
         remarks: args.remarks,
         customFields: args.customFields,
@@ -244,8 +275,12 @@ export function registerInventoryTools(server: McpServer, client: InflowClient):
       timestamp: z.string().optional(),
     },
     async (args) => {
+      // inFlow API requires stockTransferId for both create and update
+      // Generate a new UUID if not provided (for creates)
+      const stockTransferId = args.id || randomUUID();
+
       const transfer: StockTransfer = {
-        id: args.id,
+        stockTransferId: stockTransferId,
         transferDate: args.transferDate,
         fromLocationId: args.fromLocationId,
         toLocationId: args.toLocationId,
@@ -342,8 +377,12 @@ export function registerInventoryTools(server: McpServer, client: InflowClient):
       timestamp: z.string().optional(),
     },
     async (args) => {
+      // inFlow API requires stockCountId for both create and update
+      // Generate a new UUID if not provided (for creates)
+      const stockCountId = args.id || randomUUID();
+
       const stockCount: StockCount = {
-        id: args.id,
+        stockCountId: stockCountId,
         countDate: args.countDate,
         locationId: args.locationId,
         remarks: args.remarks,
@@ -382,10 +421,10 @@ export function registerInventoryTools(server: McpServer, client: InflowClient):
     },
     async (args) => {
       const filters: ManufacturingOrderFilter = {};
-      if (args.orderNumber) filters.orderNumber = args.orderNumber;
+      if (args.orderNumber) filters.manufacturingOrderNumber = args.orderNumber;
       if (args.locationId) filters.locationId = args.locationId;
       if (args.status) filters.status = args.status;
-      if (args.outputProductId) filters.outputProductId = args.outputProductId;
+      if (args.outputProductId) filters.primaryFinishedProductId = args.outputProductId;
       if (args.orderDateFrom) filters.orderDateFrom = args.orderDateFrom;
       if (args.orderDateTo) filters.orderDateTo = args.orderDateTo;
 
@@ -453,14 +492,19 @@ export function registerInventoryTools(server: McpServer, client: InflowClient):
       timestamp: z.string().optional(),
     },
     async (args) => {
+      // inFlow API requires manufacturingOrderId for both create and update
+      // Generate a new UUID if not provided (for creates)
+      const manufacturingOrderId = args.id || randomUUID();
+
       const order: ManufacturingOrder = {
-        id: args.id,
+        manufacturingOrderId: manufacturingOrderId,
         orderDate: args.orderDate,
-        requiredDate: args.requiredDate,
+        dueDate: args.requiredDate,
         locationId: args.locationId,
-        outputProductId: args.outputProductId,
-        outputQuantity: args.outputQuantity,
-        inputItems: args.inputItems as ManufacturingInputItem[],
+        primaryFinishedProductId: args.outputProductId,
+        lines: buildManufacturingOrderLines(
+          args.outputProductId, args.outputQuantity, args.inputItems
+        ),
         remarks: args.remarks,
         customFields: args.customFields,
         timestamp: args.timestamp,
