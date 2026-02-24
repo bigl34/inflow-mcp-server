@@ -84,7 +84,7 @@ export function registerPurchaseOrderTools(server: McpServer, client: InflowClie
       include: z
         .array(z.string())
         .optional()
-        .describe('Related data to include (e.g., vendor, items, items.product)'),
+        .describe('Related data to include (e.g., vendor, lines, lines.product)'),
       skip: z.number().optional().describe('Number of records to skip'),
       count: z.number().optional().describe('Number of records to return (max 100)'),
       sort: z.string().optional().describe('Property to sort by (e.g., orderDate, orderNumber)'),
@@ -141,7 +141,7 @@ export function registerPurchaseOrderTools(server: McpServer, client: InflowClie
       include: z
         .array(z.string())
         .optional()
-        .describe('Related data to include (e.g., vendor, location, items, items.product)'),
+        .describe('Related data to include (e.g., vendor, location, lines, lines.product)'),
     },
     async (args) => {
       const order = await client.get<PurchaseOrder>(
@@ -194,11 +194,11 @@ export function registerPurchaseOrderTools(server: McpServer, client: InflowClie
         quantity: {
           standardQuantity: item.quantity,
           uomQuantity: item.quantity,
+          ...(item.serialNumbers?.length ? { serialNumbers: item.serialNumbers } : {}),
         },
         unitPrice: item.unitCost,
         taxCodeId: item.taxCodeId,
         sublocation: item.sublocation,
-        serialNumbers: item.serialNumbers,
       }));
 
       const order: PurchaseOrder = {
@@ -211,7 +211,7 @@ export function registerPurchaseOrderTools(server: McpServer, client: InflowClie
         shippingAddress: args.shippingAddress as Address,
         currencyCode: args.currencyCode,
         lines: lines as PurchaseOrderItem[],
-        remarks: args.remarks,
+        orderRemarks: args.remarks,
         customFields: args.customFields,
         timestamp: args.timestamp,
       };

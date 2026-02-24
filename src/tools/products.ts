@@ -62,7 +62,7 @@ export function registerProductTools(server: McpServer, client: InflowClient): v
       if (resolvedCategoryId) filters.categoryId = resolvedCategoryId;
       if (args.isActive !== undefined) filters.isActive = args.isActive;
       if (args.smart) filters.smart = args.smart;
-      if (args.trackSerials !== undefined) (filters as any).trackSerials = args.trackSerials;
+      if (args.trackSerials !== undefined) filters.trackSerials = args.trackSerials;
 
       const pagination: PaginationParams = {};
       if (args.skip !== undefined) pagination.skip = args.skip;
@@ -285,10 +285,8 @@ export function registerProductTools(server: McpServer, client: InflowClient): v
         const results = await Promise.all(childProductPromises);
         results.forEach((p) => {
           if (p) {
-            // API returns productId, but we also check id for compatibility
-            const productId = (p as any).productId || p.id;
-            if (productId) {
-              childProducts[productId] = p;
+            if (p.productId) {
+              childProducts[p.productId] = p;
             }
           }
         });
