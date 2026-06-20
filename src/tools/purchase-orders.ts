@@ -175,7 +175,7 @@ export function registerPurchaseOrderTools(server: McpServer, client: InflowClie
       currencyCode: z.string().optional().describe('Currency code (e.g., USD)'),
       items: z.array(purchaseOrderItemSchema).optional().describe('Order line items'),
       remarks: z.string().optional().describe('Order remarks/notes'),
-      customFields: z.record(z.unknown()).optional().describe('Custom field values'),
+      customFields: z.record(z.string(), z.unknown()).optional().describe('Custom field values'),
       timestamp: z.string().optional().describe('Timestamp for concurrency control'),
     },
     async (args) => {

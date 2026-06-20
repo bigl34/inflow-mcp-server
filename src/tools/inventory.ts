@@ -1,5 +1,6 @@
 // Inventory operation tools for inFlow MCP Server
-// Includes: Stock Adjustments, Stock Transfers, Stock Counts, Manufacturing Orders
+// Includes: Stock Adjustments, Stock Transfers, Stock Counts
+// Manufacturing Orders moved to ./manufacturing-orders.ts
 
 import { z } from 'zod';
 import { randomUUID } from 'crypto';
@@ -13,9 +14,6 @@ import type {
   StockTransferItem,
   StockTransferFilter,
   StockCount,
-  ManufacturingOrder,
-  ManufacturingOrderLine,
-  ManufacturingOrderFilter,
   PaginationParams,
 } from '../types/inflow.js';
 
@@ -36,38 +34,6 @@ const stockTransferItemSchema = z.object({
   toSublocation: z.string().optional(),
   serialNumbers: z.array(z.string()).optional(),
 });
-
-const manufacturingInputItemSchema = z.object({
-  productId: z.string(),
-  quantity: z.number(),
-  sublocation: z.string().optional(),
-});
-
-function buildManufacturingOrderLines(
-  outputProductId: string,
-  outputQuantity: number,
-  inputItems?: Array<{ productId: string; quantity: number; sublocation?: string }>
-): ManufacturingOrderLine[] {
-  const childLines: ManufacturingOrderLine[] = (inputItems || []).map(item => ({
-    manufacturingOrderLineId: randomUUID(),
-    productId: item.productId,
-    quantity: {
-      standardQuantity: String(item.quantity),
-      uomQuantity: String(item.quantity),
-    },
-  }));
-
-  return [{
-    manufacturingOrderLineId: randomUUID(),
-    productId: outputProductId,
-    parentManufacturingOrderLineId: null,
-    quantity: {
-      standardQuantity: String(outputQuantity),
-      uomQuantity: String(outputQuantity),
-    },
-    manufacturingOrderLines: childLines,
-  }];
-}
 
 export function registerInventoryTools(server: McpServer, client: InflowClient): void {
   // ==================== STOCK ADJUSTMENTS ====================
@@ -157,7 +123,7 @@ export function registerInventoryTools(server: McpServer, client: InflowClient):
       reasonId: z.string().optional().describe('Adjustment reason ID'),
       items: z.array(stockAdjustmentItemSchema).describe('Items to adjust'),
       remarks: z.string().optional().describe('Notes/remarks'),
-      customFields: z.record(z.unknown()).optional(),
+      customFields: z.record(z.string(), z.unknown()).optional(),
       timestamp: z.string().optional(),
     },
     async (args) => {
@@ -271,7 +237,7 @@ export function registerInventoryTools(server: McpServer, client: InflowClient):
       toLocationId: z.string().describe('Destination location ID'),
       items: z.array(stockTransferItemSchema).describe('Items to transfer'),
       remarks: z.string().optional().describe('Notes/remarks'),
-      customFields: z.record(z.unknown()).optional(),
+      customFields: z.record(z.string(), z.unknown()).optional(),
       timestamp: z.string().optional(),
     },
     async (args) => {
@@ -390,127 +356,6 @@ export function registerInventoryTools(server: McpServer, client: InflowClient):
       };
 
       const result = await client.put<StockCount>('/stock-counts', stockCount);
-
-      return {
-        content: [{ type: 'text', text: JSON.stringify(result, null, 2) }],
-      };
-    }
-  );
-
-  // ==================== MANUFACTURING ORDERS ====================
-
-  // List Manufacturing Orders
-  server.tool(
-    'list_manufacturing_orders',
-    'Search and list manufacturing/work orders',
-    {
-      orderNumber: z.string().optional().describe('Filter by order number'),
-      locationId: z.string().optional().describe('Filter by location ID'),
-      status: z
-        .enum(['Open', 'InProgress', 'Completed', 'Cancelled'])
-        .optional(),
-      outputProductId: z.string().optional().describe('Filter by output product'),
-      orderDateFrom: z.string().optional(),
-      orderDateTo: z.string().optional(),
-      include: z.array(z.string()).optional(),
-      skip: z.number().optional(),
-      count: z.number().optional(),
-      sort: z.string().optional().describe('Property to sort by (e.g., orderDate, orderNumber)'),
-      sortDesc: z.boolean().optional().describe('Sort in descending order'),
-      includeCount: z.boolean().optional().describe('Include total record count in response'),
-    },
-    async (args) => {
-      const filters: ManufacturingOrderFilter = {};
-      if (args.orderNumber) filters.manufacturingOrderNumber = args.orderNumber;
-      if (args.locationId) filters.locationId = args.locationId;
-      if (args.status) filters.status = args.status;
-      if (args.outputProductId) filters.primaryFinishedProductId = args.outputProductId;
-      if (args.orderDateFrom) filters.orderDateFrom = args.orderDateFrom;
-      if (args.orderDateTo) filters.orderDateTo = args.orderDateTo;
-
-      const pagination: PaginationParams = {};
-      if (args.skip !== undefined) pagination.skip = args.skip;
-      if (args.count !== undefined) pagination.count = args.count;
-
-      const result = await client.getList<ManufacturingOrder>('/manufacturing-orders', {
-        filters,
-        pagination,
-        include: args.include,
-        sort: args.sort,
-        sortDesc: args.sortDesc,
-        includeCount: args.includeCount,
-      });
-
-      const response: { data: ManufacturingOrder[]; totalCount?: number } = { data: result.data };
-      if (result.totalCount !== undefined) {
-        response.totalCount = result.totalCount;
-      }
-
-      return {
-        content: [{ type: 'text', text: JSON.stringify(response, null, 2) }],
-      };
-    }
-  );
-
-  // Get Manufacturing Order
-  server.tool(
-    'get_manufacturing_order',
-    'Get details of a specific manufacturing order',
-    {
-      manufacturingOrderId: z.string().describe('The manufacturing order ID'),
-      include: z.array(z.string()).optional(),
-    },
-    async (args) => {
-      const order = await client.get<ManufacturingOrder>(
-        `/manufacturing-orders/${args.manufacturingOrderId}`,
-        { include: args.include }
-      );
-
-      return {
-        content: [{ type: 'text', text: JSON.stringify(order, null, 2) }],
-      };
-    }
-  );
-
-  // Create/Update Manufacturing Order
-  server.tool(
-    'upsert_manufacturing_order',
-    'Create or update a manufacturing/work order',
-    {
-      id: z.string().optional().describe('Order ID (required for updates)'),
-      orderDate: z.string().optional().describe('Order date (ISO format)'),
-      requiredDate: z.string().optional().describe('Required completion date'),
-      locationId: z.string().describe('Location ID'),
-      outputProductId: z.string().describe('Product ID being manufactured'),
-      outputQuantity: z.number().describe('Quantity to manufacture'),
-      inputItems: z
-        .array(manufacturingInputItemSchema)
-        .optional()
-        .describe('Input/component items'),
-      remarks: z.string().optional(),
-      customFields: z.record(z.unknown()).optional(),
-      timestamp: z.string().optional(),
-    },
-    async (args) => {
-      // inFlow API requires manufacturingOrderId for both create and update
-      // Generate a new UUID if not provided (for creates)
-      const manufacturingOrderId = args.id || randomUUID();
-
-      const order: ManufacturingOrder = {
-        manufacturingOrderId: manufacturingOrderId,
-        orderDate: args.orderDate,
-        dueDate: args.requiredDate,
-        locationId: args.locationId,
-        primaryFinishedProductId: args.outputProductId,
-        lines: buildManufacturingOrderLines(
-          args.outputProductId, args.outputQuantity, args.inputItems
-        ),
-        remarks: args.remarks,
-        customFields: args.customFields,
-        timestamp: args.timestamp,
-      };
-
-      const result = await client.put<ManufacturingOrder>('/manufacturing-orders', order);
 
       return {
         content: [{ type: 'text', text: JSON.stringify(result, null, 2) }],
