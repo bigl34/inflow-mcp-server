@@ -30,6 +30,7 @@ import { registerSalesOrderTools } from './tools/sales-orders.js';
 import { registerPurchaseOrderTools } from './tools/purchase-orders.js';
 import { registerCustomerTools } from './tools/customers.js';
 import { registerInventoryTools } from './tools/inventory.js';
+import { registerManufacturingOrderTools } from './tools/manufacturing-orders.js';
 import { registerReferenceTools } from './tools/reference.js';
 import { registerSerialTools } from './tools/serials.js';
 
@@ -52,6 +53,7 @@ async function main(): Promise<void> {
   registerPurchaseOrderTools(server, client);
   registerCustomerTools(server, client);
   registerInventoryTools(server, client);
+  registerManufacturingOrderTools(server, client);
   registerReferenceTools(server, client);
   registerSerialTools(server, client);
 
@@ -72,3 +74,4 @@ main().catch((error) => {
   console.error('Fatal error:', error);
   process.exit(1);
 });
+

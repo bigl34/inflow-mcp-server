@@ -283,6 +283,10 @@ export interface SalesOrderLine {
   taxCodeId?: string;
   subtotal?: number;
   sublocation?: string;
+  // inFlow returns these on GET with include=lines and expects them echoed on PUT
+  // to preserve nested fields (e.g. quantity.serialNumbers) through partial updates.
+  lineNum?: number;
+  timestamp?: string;
 }
 
 export type OrderStatus =
@@ -546,6 +550,7 @@ export interface ManufacturingOrderLine {
   productId?: string;
   description?: string;
   quantity?: QuantityWithUom;
+  sublocation?: string;
   manufacturingOrderLines?: ManufacturingOrderLine[];
   timestamp?: string;
 }

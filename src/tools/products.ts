@@ -139,7 +139,7 @@ export function registerProductTools(server: McpServer, client: InflowClient): v
       weight: z.number().optional().describe('Product weight'),
       weightUnit: z.string().optional().describe('Weight unit (e.g., kg, lb)'),
       customFields: z
-        .record(z.unknown())
+        .record(z.string(), z.unknown())
         .optional()
         .describe('Custom field values'),
       timestamp: z
