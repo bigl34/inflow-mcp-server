@@ -2,13 +2,17 @@
 
 A Model Context Protocol (MCP) server that provides comprehensive tools for interacting with the [inFlow Inventory](https://www.inflowinventory.com/) API. This enables AI assistants like Claude to manage your inventory, orders, customers, and more.
 
+Current package version: `1.2.0`
+
 ## Features
 
 - **Products**: List, search, create, update products and check inventory levels
-- **Sales Orders**: Create and manage customer orders
-- **Purchase Orders**: Create and manage vendor purchase orders
+- **Sales Orders**: Create customer orders and patch existing orders without dropping unmentioned lines or serial numbers
+- **Purchase Orders**: Create vendor purchase orders, receive stock, and reverse received stock
 - **Customers & Vendors**: Manage customer and vendor records
 - **Inventory Operations**: Stock adjustments, transfers, counts, and manufacturing orders
+- **Manufacturing Orders**: Create or patch work orders while preserving output/input lines and serial numbers
+- **Serial Numbers**: Query serial numbers from orders or product inventory lines
 - **Reference Data**: Locations, categories, pricing schemes, payment terms, currencies, tax codes
 - **Webhooks**: Subscribe to inFlow events
 
@@ -21,7 +25,7 @@ A Model Context Protocol (MCP) server that provides comprehensive tools for inte
 ## Installation
 
 ```bash
-# Clone or copy the server files
+git clone https://github.com/bigl34/inflow-mcp-server.git
 cd inflow-mcp-server
 
 # Install dependencies
@@ -100,7 +104,7 @@ Add to your Claude Desktop configuration file:
 |------|-------------|
 | `list_sales_orders` | Search and filter sales orders |
 | `get_sales_order` | Get order details by ID |
-| `upsert_sales_order` | Create or update a sales order |
+| `upsert_sales_order` | Create an order or partially update an existing order. Updates preserve unmentioned header fields and lines, merge item patches by line ID or unambiguous product ID, and remove lines listed in `deleteLineIds`. |
 
 ### Purchase Orders
 
@@ -109,6 +113,8 @@ Add to your Claude Desktop configuration file:
 | `list_purchase_orders` | Search and filter purchase orders |
 | `get_purchase_order` | Get order details by ID |
 | `upsert_purchase_order` | Create or update a purchase order |
+| `receive_purchase_order` | Receive all remaining items or selected quantities onto a purchase order |
+| `unreceive_purchase_order` | Reverse received stock by receive-line ID, product quantity, or full unreceive |
 
 ### Customers
 
@@ -141,7 +147,18 @@ Add to your Claude Desktop configuration file:
 | `upsert_stock_count` | Create/update stock count |
 | `list_manufacturing_orders` | List work orders |
 | `get_manufacturing_order` | Get work order details |
-| `upsert_manufacturing_order` | Create/update work order |
+| `upsert_manufacturing_order` | Create a work order or partially update an existing one. Updates preserve unmentioned fields, patch output quantity/serials in place, merge input-line patches, and remove lines listed in `deleteInputLineIds`. |
+
+### Serial Numbers
+
+| Tool | Description |
+|------|-------------|
+| `get_sales_order_serials` | Extract serial numbers assigned to sales order lines |
+| `get_purchase_order_serials` | Extract serial numbers assigned to purchase order lines |
+| `search_serial_number` | Search fulfilled sales orders for a serial number |
+| `list_serial_numbers` | Aggregate serial numbers from fulfilled sales orders |
+| `get_product_serials` | Get all serial numbers for a serialized product using product inventory lines |
+| `list_all_serials` | List serial numbers across products that track serials |
 
 ### Reference Data
 
@@ -187,10 +204,37 @@ Create a sales order for customer "Acme Corp" with:
 Required by next Friday
 ```
 
+### Patch a Sales Order
+
+```
+Update sales order SO-1001:
+- change the required date to next Monday
+- update line abc123 to quantity 2 with serial numbers SN-001 and SN-002
+- remove line def456
+```
+
+### Receive a Purchase Order
+
+```
+Receive all remaining items on purchase order PO-1001 at the Main Warehouse
+```
+
+### Reverse a Purchase Order Receipt
+
+```
+Unreceive 1 unit of product SKU-001 from purchase order PO-1001 as a dry run first
+```
+
 ### Check Inventory
 
 ```
 What's the current stock level for product "Widget Pro" across all locations?
+```
+
+### Look Up Serial Numbers
+
+```
+Show all in-stock serial numbers for product "Widget Pro"
 ```
 
 ### Create Stock Transfer
@@ -260,7 +304,18 @@ Use the `include` parameter to fetch related data:
 
 ```
 get_sales_order with include=["customer", "lines", "lines.product"]
+get_product with include=["inventoryLines"]
 ```
+
+### Partial Updates
+
+`upsert_sales_order` and `upsert_manufacturing_order` support safe partial updates when `id` is provided:
+
+- Existing fields and lines that are not mentioned are preserved.
+- Line patches merge by explicit line ID, or by product ID when there is exactly one matching line.
+- Sales order lines listed in `deleteLineIds` are removed.
+- Manufacturing order input lines listed in `deleteInputLineIds` are removed.
+- Serial numbers can be patched without rebuilding the whole order manually.
 
 ### Concurrency Control
 
