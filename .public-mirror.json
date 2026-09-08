@@ -1,0 +1,8 @@
+{
+  "schema_version": 1,
+  "managed_by": "publish-public-repos",
+  "item": "inflow-mcp-server",
+  "history_policy": "incremental-only",
+  "actions_policy": "safe-workflows-only",
+  "public_branch": "main"
+}

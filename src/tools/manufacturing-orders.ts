@@ -366,7 +366,7 @@ export function registerManufacturingOrderTools(
     'Create a new manufacturing order or update an existing one. When `id` is provided, performs a partial update: unmentioned header fields and line items are preserved, `outputSerialNumbers`/`outputQuantity` patch the parent output line in place, `inputLines[]` patches merge into existing component lines by id (or unambiguous productId), and any `deleteInputLineIds` are removed. Without `id`, creates a new MO from `outputProductId`, `outputQuantity`, optional `inputItems`, and optional `outputSerialNumbers`.',
     {
       id: z.string().optional().describe('Order ID (required for updates)'),
-      orderNumber: z.string().optional().describe('Order number (e.g. MO-001)'),
+      orderNumber: z.string().optional().describe('Order number (e.g. MO-SYNTHETIC-001)'),
       orderDate: z.string().optional().describe('Order date (ISO format)'),
       requiredDate: z.string().optional().describe('Required completion date (ISO format)'),
       locationId: z.string().optional().describe('Location ID'),

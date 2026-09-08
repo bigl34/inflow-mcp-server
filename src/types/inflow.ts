@@ -51,9 +51,12 @@ export interface Product {
   isActive?: boolean;
   isSerialized?: boolean;
   isManufacturable?: boolean;
+  autoAssemble?: boolean;
+  includeQuantityBuildable?: boolean;
   trackSerials?: boolean;
   cost?: number;
-  defaultPrice?: number;
+  defaultPrice?: ProductPrice;
+  prices?: ProductPrice[];
   reorderPoint?: number;
   reorderQuantity?: number;
   dimensions?: ProductDimensions;
@@ -61,6 +64,8 @@ export interface Product {
   weightUnit?: string;
   customFields?: Record<string, unknown>;
   itemBoms?: ItemBom[];
+  productOperations?: ProductOperation[];
+  productVariant?: ProductVariant;
   inventoryLines?: InventoryLine[];
   timestamp?: string;
   createdDate?: string;
@@ -72,6 +77,7 @@ export interface InventoryLine {
   locationId?: string;
   quantityOnHand?: string;
   sublocation?: string;
+  timestamp?: string;
 }
 
 // Bill of Materials types
@@ -83,6 +89,83 @@ export interface ItemBom {
   childProduct?: Product;
   quantity?: QuantityWithUom;
   timestamp?: string;
+}
+
+export interface ProductOperation {
+  productOperationId?: string;
+  productId?: string;
+  operationTypeId?: string;
+  operationType?: OperationType;
+  lineNum?: number;
+  cost?: string | null;
+  estimatedPerHourCost?: string | null;
+  estimatedSeconds?: string | null;
+  instructions?: string;
+  trackTime?: boolean;
+  timestamp?: string;
+}
+
+export interface OperationType {
+  operationTypeId?: string;
+  name?: string;
+  isActive?: boolean;
+  timestamp?: string;
+  isDefault?: boolean;
+  estimatedPerHourCost?: string | null;
+  trackTime?: boolean;
+}
+
+export interface ProductGroup {
+  productGroupId?: string;
+  name?: string;
+  description?: string;
+  isActive?: boolean;
+  categoryId?: string;
+  defaultProductId?: string;
+  defaultImageId?: string;
+  images?: unknown[];
+  options?: ProductGroupOption[];
+  productVariants?: ProductVariant[];
+  timestamp?: string;
+}
+
+export interface ProductGroupOption {
+  productGroupOptionId?: string;
+  productGroupId?: string;
+  name?: string;
+  lineNum?: number;
+  optionValues?: ProductGroupOptionValue[];
+  timestamp?: string;
+}
+
+export interface ProductGroupOptionValue {
+  productGroupOptionValueId?: string;
+  productGroupOptionId?: string;
+  name?: string;
+  value?: string;
+  optionValue?: string;
+  lineNum?: number;
+  timestamp?: string;
+}
+
+export interface ProductVariant {
+  productVariantId?: string;
+  productGroupId?: string;
+  productId?: string;
+  product?: Product;
+  variantOption?: Record<string, unknown> | unknown[];
+  defaultPrice?: ProductPrice;
+  timestamp?: string;
+}
+
+export interface ProductGroupQuantity {
+  productId?: string;
+  productVariantId?: string;
+  locationId?: string;
+  quantityOnHand?: string | number;
+  quantityAvailable?: string | number;
+  quantityBuildable?: string | number;
+  [key: string]: unknown;
 }
 
 export interface QuantityWithUom {
@@ -101,24 +184,46 @@ export interface ProductDimensions {
 
 export interface ProductSummary {
   productId: string;
-  quantityOnHand: number;
-  quantityAvailable: number;
-  quantityOnOrder: number;
-  quantityAllocated: number;
+  quantityOnHand: string;
+  quantityAvailable: string;
+  quantityOnOrder: string;
+  quantityAllocated: string;
+  rawQuantityAvailable?: string;
+  quantityReserved?: string;
+  quantityReservedForSales?: string;
+  quantityReservedForManufacturing?: string;
+  quantityReservedForTransfers?: string;
+  quantityReservedForBuilds?: string;
+  quantityPicked?: string;
   locationSummaries?: LocationSummary[];
 }
 
 export interface LocationSummary {
   locationId: string;
   locationName: string;
-  quantityOnHand: number;
-  quantityAvailable: number;
+  quantityOnHand: string;
+  quantityAvailable: string;
+  rawQuantityAvailable?: string;
+  quantityReserved?: string;
+  quantityReservedForSales?: string;
+  quantityReservedForManufacturing?: string;
+  quantityReservedForTransfers?: string;
+  quantityReservedForBuilds?: string;
+  quantityPicked?: string;
   sublocationSummaries?: SublocationSummary[];
 }
 
 export interface SublocationSummary {
   sublocation: string;
-  quantityOnHand: number;
+  quantityOnHand: string;
+  quantityAvailable?: string;
+  rawQuantityAvailable?: string;
+  quantityReserved?: string;
+  quantityReservedForSales?: string;
+  quantityReservedForManufacturing?: string;
+  quantityReservedForTransfers?: string;
+  quantityReservedForBuilds?: string;
+  quantityPicked?: string;
 }
 
 export interface ProductFilter {
@@ -145,6 +250,7 @@ export interface Category {
 // Location types
 export interface Location {
   id?: string;
+  locationId?: string;
   name: string;
   address?: Address;
   isActive?: boolean;
@@ -523,6 +629,7 @@ export interface CountSheetItem {
 
 // Manufacturing Order types
 export interface ManufacturingOrder {
+  [key: string]: unknown;
   manufacturingOrderId?: string;
   manufacturingOrderNumber?: string;
   orderDate?: string;
@@ -532,8 +639,12 @@ export interface ManufacturingOrder {
   status?: string;
   isCancelled?: boolean;
   isCompleted?: boolean;
+  completedDate?: string | null;
   primaryFinishedProductId?: string;
   lines?: ManufacturingOrderLine[];
+  pickLines?: ManufacturingOrderPickLine[];
+  pickMatchings?: ManufacturingOrderPickMatching[];
+  putLines?: ManufacturingOrderPutLine[];
   remarks?: string;
   pickRemarks?: string;
   putAwayRemarks?: string;
@@ -544,6 +655,7 @@ export interface ManufacturingOrder {
 }
 
 export interface ManufacturingOrderLine {
+  [key: string]: unknown;
   manufacturingOrderLineId?: string;
   manufacturingOrderId?: string;
   parentManufacturingOrderLineId?: string | null;
@@ -552,6 +664,81 @@ export interface ManufacturingOrderLine {
   quantity?: QuantityWithUom;
   sublocation?: string;
   manufacturingOrderLines?: ManufacturingOrderLine[];
+  manufacturingOrderOperations?: ManufacturingOrderOperation[];
+  timestamp?: string;
+}
+
+export interface ManufacturingOrderPickLine {
+  [key: string]: unknown;
+  manufacturingOrderPickLineId?: string;
+  manufacturingOrderId?: string;
+  productId?: string;
+  locationId?: string;
+  lotId?: string | null;
+  sublocation?: string;
+  description?: string;
+  quantity?: QuantityWithUom;
+  pickDate?: string;
+  timestamp?: string;
+}
+
+export interface ManufacturingOrderPickMatching {
+  [key: string]: unknown;
+  manufacturingOrderPickMatchingId?: string;
+  manufacturingOrderId?: string;
+  manufacturingOrderLineId?: string;
+  manufacturingOrderPickLineId?: string;
+  matchedQuantity?: string;
+  serial?: string;
+  lastModifiedById?: string;
+  timestamp?: string;
+}
+
+/**
+ * A finished-product inventory placement belonging to a manufacturing order.
+ * The public contract exposes these rows at the order root as `putLines`.
+ */
+export interface ManufacturingOrderPutLine {
+  [key: string]: unknown;
+  manufacturingOrderPutLineId?: string;
+  manufacturingOrderId?: string;
+  manufacturingOrderLineId?: string;
+  productId?: string;
+  locationId?: string;
+  lotId?: string | null;
+  sublocation?: string;
+  description?: string;
+  quantity?: QuantityWithUom;
+  putDate?: string;
+  timestamp?: string;
+}
+
+/**
+ * An operation expanded beneath a manufacturing-order line. The nested
+ * timesheet relationship and fields follow the official inFlow OpenAPI
+ * contract; their live write behavior remains unverified without a canary.
+ */
+export interface ManufacturingOrderOperation {
+  [key: string]: unknown;
+  manufacturingOrderOperationId?: string;
+  manufacturingOrderLineId?: string;
+  operationTypeId?: string;
+  lineNum?: number;
+  completedDate?: string | null;
+  instructions?: string;
+  trackTime?: boolean;
+  manufacturingOrderOperationTimesheets?: ManufacturingOrderOperationTimesheet[];
+  timestamp?: string;
+}
+
+export interface ManufacturingOrderOperationTimesheet {
+  [key: string]: unknown;
+  manufacturingOrderOperationTimesheetId?: string;
+  startTime?: string | null;
+  endTime?: string | null;
+  perHourCost?: string | null;
+  userId?: string;
+  user?: Record<string, unknown> | null;
   timestamp?: string;
 }
 
@@ -568,8 +755,20 @@ export interface ManufacturingOrderFilter {
 // Reference data types
 export interface PricingScheme {
   id?: string;
+  pricingSchemeId?: string;
   name: string;
   isDefault?: boolean;
+}
+
+export interface ProductPrice {
+  productPriceId?: string;
+  productId?: string;
+  pricingSchemeId?: string;
+  pricingScheme?: PricingScheme;
+  timestamp?: string;
+  unitPrice?: string | null;
+  fixedMarkup?: string | null;
+  priceType?: 'fixedPrice' | 'fixedMarkup' | string;
 }
 
 export interface PaymentTerms {
@@ -669,7 +868,7 @@ export interface TeamMember {
 
 // API Error types
 export interface ApiError {
-  code: string;
+  code?: string;
   message: string;
   details?: Record<string, unknown>;
 }
