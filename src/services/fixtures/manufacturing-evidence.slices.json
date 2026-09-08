@@ -1,0 +1,68 @@
+{
+  "_fixture": {
+    "schemaVersion": "manufacturing-evidence-slices/v1",
+    "credentialFree": true,
+    "note": "Synthetic identifiers in provider-shaped payload slices for contract characterization; these are not complete write documents."
+  },
+  "knownGoodSyntheticMo": {
+    "manufacturingOrderId": "00000000-0000-4000-8000-000000000111",
+    "manufacturingOrderNumber": "MO-SYNTHETIC-001",
+    "nonSerialized": {
+      "pickLine": {
+        "manufacturingOrderPickLineId": "00000000-0000-4000-8000-000000000102",
+        "locationId": "00000000-0000-4000-8000-000000000120",
+        "lotId": null,
+        "productId": "00000000-0000-4000-8000-000000000105",
+        "quantity": {
+          "standardQuantity": "34.0000",
+          "uomQuantity": "34.0000",
+          "uom": "",
+          "serialNumbers": []
+        }
+      },
+      "matching": {
+        "manufacturingOrderPickMatchingId": "00000000-0000-4000-8000-000000000108",
+        "manufacturingOrderLineId": "00000000-0000-4000-8000-000000000109",
+        "manufacturingOrderPickLineId": "00000000-0000-4000-8000-000000000102",
+        "matchedQuantity": "34.0000",
+        "serial": ""
+      }
+    },
+    "serialized": {
+      "pickLineId": "00000000-0000-4000-8000-000000000119",
+      "rawLineId": "00000000-0000-4000-8000-000000000122",
+      "matching": {
+        "manufacturingOrderPickMatchingId": "00000000-0000-4000-8000-000000000107",
+        "manufacturingOrderLineId": "00000000-0000-4000-8000-000000000122",
+        "manufacturingOrderPickLineId": "00000000-0000-4000-8000-000000000119",
+        "matchedQuantity": "1.0000",
+        "serial": "SERIAL-SYNTHETIC-001"
+      }
+    }
+  },
+  "britishFlagBom": {
+    "productId": "00000000-0000-4000-8000-000000000124",
+    "itemBoms": [
+      {
+        "itemBomId": "00000000-0000-4000-8000-000000000110",
+        "childProductId": "00000000-0000-4000-8000-000000000125",
+        "quantity": "1"
+      },
+      {
+        "itemBomId": "00000000-0000-4000-8000-000000000123",
+        "childProductId": "00000000-0000-4000-8000-000000000112",
+        "quantity": "1"
+      },
+      {
+        "itemBomId": "00000000-0000-4000-8000-000000000101",
+        "childProductId": "00000000-0000-4000-8000-000000000113",
+        "quantity": "2"
+      },
+      {
+        "itemBomId": "00000000-0000-4000-8000-000000000127",
+        "childProductId": "00000000-0000-4000-8000-000000000114",
+        "quantity": "1"
+      }
+    ]
+  }
+}

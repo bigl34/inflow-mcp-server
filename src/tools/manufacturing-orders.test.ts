@@ -49,7 +49,7 @@ const outputLine = (): ManufacturingOrderLine => ({
 
 const existingOrder = (): ManufacturingOrder => ({
   manufacturingOrderId: 'mo-170',
-  manufacturingOrderNumber: 'MO-001',
+  manufacturingOrderNumber: 'MO-SYNTHETIC-001',
   orderDate: '2026-04-20T00:00:00Z',
   dueDate: '2026-05-01T00:00:00Z',
   locationId: 'loc-primary',

@@ -1,5 +1,9 @@
 import { describe, it, expect } from 'vitest';
-import { mergeSalesOrderUpdate, upsertSalesOrderToolSchema } from './sales-orders.js';
+import {
+  mergeSalesOrderUpdate,
+  upsertSalesOrderToolSchema,
+  toInflowMoney,
+} from './sales-orders.js';
 import type { SalesOrder, SalesOrderLine } from '../types/inflow.js';
 
 const lineFoo = (): SalesOrderLine => ({
@@ -45,7 +49,7 @@ const existingOrder = (): SalesOrder => ({
   customerId: 'cust-example',
   locationId: 'loc-primary',
   orderRemarks: 'original remark',
-  customFields: { custom4: 'https://your-commerce-platform.example/orders/ORDER_ID' },
+  customFields: { custom4: 'https://admin.shopify.com/.../ORDER-001' },
   timestamp: '2026-04-20T00:00:00Z',
   lines: [lineFoo(), lineBar()],
 });
@@ -185,7 +189,7 @@ describe('mergeSalesOrderUpdate', () => {
     expect(merged.lines).toEqual([lineFoo(), lineBar()]);
     // customFields not mentioned → preserved
     expect(merged.customFields).toEqual({
-      custom4: 'https://your-commerce-platform.example/orders/ORDER_ID',
+      custom4: 'https://admin.shopify.com/.../ORDER-001',
     });
   });
 
@@ -307,12 +311,80 @@ describe('mergeSalesOrderUpdate', () => {
       nonCustomerCost: 0,
     });
 
-    expect(merged.nonCustomerCost).toBe(0);
+    // A legitimate zero must survive. A truthiness guard would drop it and
+    // silently leave the previous cost in place.
+    expect(merged.nonCustomerCost).toEqual({ value: '0.00000', isPercent: false });
     // Lines, customFields, and orderRemarks all preserved
     expect(merged.lines).toEqual([lineFoo(), lineBar()]);
     expect(merged.customFields).toEqual({
-      custom4: 'https://your-commerce-platform.example/orders/ORDER_ID',
+      custom4: 'https://admin.shopify.com/.../ORDER-001',
     });
     expect(merged.orderRemarks).toBe('original remark');
+  });
+
+  it('converts nonCustomerCost to the decimal-string object the Cloud API requires', () => {
+    const existing = existingOrder();
+
+    const merged = mergeSalesOrderUpdate(existing, {
+      id: 'so-123',
+      customerId: 'cust-example',
+      nonCustomerCost: 12.34,
+    });
+
+    // A bare number here is what produced HTTP 422 from the Cloud API.
+    expect(merged.nonCustomerCost).toEqual({ value: '12.34000', isPercent: false });
+  });
+
+  it('leaves nonCustomerCost untouched when the caller did not supply one', () => {
+    // The merge starts from the existing order, so "not supplied" means
+    // "preserve whatever the order already had" — not "clear it". The
+    // fixture carries none, so the field stays absent here.
+    const existing = existingOrder();
+
+    const merged = mergeSalesOrderUpdate(existing, {
+      id: 'so-123',
+      customerId: 'cust-example',
+    });
+
+    expect(merged.nonCustomerCost).toBeUndefined();
+  });
+
+  it('preserves an existing nonCustomerCost when the caller did not supply one', () => {
+    // The case the test above cannot show: an omitted nonCustomerCost must not
+    // wipe a value already on the order.
+    const existing = {
+      ...existingOrder(),
+      nonCustomerCost: { value: '104.67000', isPercent: false },
+    } as SalesOrder;
+
+    const merged = mergeSalesOrderUpdate(existing, {
+      id: 'so-123',
+      customerId: 'cust-example',
+    });
+
+    expect(merged.nonCustomerCost).toEqual({ value: '104.67000', isPercent: false });
+  });
+});
+
+describe('toInflowMoney', () => {
+  it('renders whole numbers to five decimal places', () => {
+    expect(toInflowMoney(40)).toEqual({ value: '40.00000', isPercent: false });
+  });
+
+  it('renders zero rather than dropping it', () => {
+    expect(toInflowMoney(0)).toEqual({ value: '0.00000', isPercent: false });
+  });
+
+  it('preserves two-decimal currency amounts exactly', () => {
+    expect(toInflowMoney(12.34)).toEqual({ value: '12.34000', isPercent: false });
+  });
+
+  it('rounds beyond five decimal places rather than emitting an exponent', () => {
+    expect(toInflowMoney(0.0000004)).toEqual({ value: '0.00000', isPercent: false });
+    expect(toInflowMoney(1234567.891234)).toEqual({ value: '1234567.89123', isPercent: false });
+  });
+
+  it('marks the amount as an absolute value, never a percentage', () => {
+    expect(toInflowMoney(12.5).isPercent).toBe(false);
   });
 });

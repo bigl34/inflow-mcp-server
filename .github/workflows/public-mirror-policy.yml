@@ -1,0 +1,24 @@
+name: Public mirror policy
+
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  verify-publisher-commit:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Require publisher commit marker
+        env:
+          COMMIT_MESSAGE: ${{ github.event.head_commit.message }}
+        run: |
+          case "$COMMIT_MESSAGE" in
+            public-publish:*) exit 0 ;;
+            *)
+              echo "Public mirrors may only be updated by /publish-public-repos."
+              exit 1
+              ;;
+          esac

@@ -1,19 +1,31 @@
 {
   "name": "inflow-mcp-server",
-  "version": "1.2.0",
+  "version": "1.4.0-alpha.2",
   "description": "MCP server for inFlow Inventory API integration",
   "type": "module",
   "main": "dist/index.js",
   "bin": {
-    "inflow-mcp-server": "dist/index.js"
+    "inflow-mcp-server": "dist/index.js",
+    "inflow-manufacturing-run-coordinator": "dist/runtime/manufacturing-run-launch.js",
+    "inflow-manufacturing-run-shadow": "dist/runtime/manufacturing-run-dark.js",
+    "manufacturing-run-launch": "dist/runtime/manufacturing-run-launch.js",
+    "manufacturing-run-dark": "dist/runtime/manufacturing-run-dark.js"
   },
   "scripts": {
     "build": "tsc",
     "start": "node dist/index.js",
+    "start:coordinator": "node dist/runtime/manufacturing-run-launch.js",
+    "validate:coordinator": "node dist/runtime/manufacturing-run-launch.js --validate-only",
+    "start:coordinator:shadow": "node dist/runtime/manufacturing-run-dark.js",
     "dev": "tsc --watch",
-    "test": "vitest run",
-    "test:watch": "vitest",
-    "test:coverage": "vitest run --coverage",
+    "test": "vitest run src",
+    "test:coordinator": "vitest run src/http src/coordinator-http.test.ts src/core/manufacturing-run-store.test.ts src/services/manufacturing-run-coordinator.test.ts",
+    "test:watch": "vitest src",
+    "test:coverage": "vitest run src --coverage",
+    "probe:manufacturing": "node dist/probes/manufacturing-writes.js",
+    "probe:manufacturing-pick-batch": "node dist/probes/manufacturing-pick-batch.js",
+    "probe:manufacturing-canary": "node dist/runtime/manufacturing-canary-launch.js",
+    "probe:domain": "node dist/probes/domain-write-canaries.js",
     "prepare": "npm run build"
   },
   "keywords": [
@@ -26,16 +38,19 @@
   "license": "MIT",
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.0.0",
+    "better-sqlite3": "^12.11.1",
     "dotenv": "^17.2.3",
+    "uuid": "^13.0.2",
     "zod": "^3.23.0"
   },
   "devDependencies": {
-    "@types/node": "^20.10.0",
+    "@types/better-sqlite3": "^7.6.13",
+    "@types/node": "^22.0.0",
     "@vitest/coverage-v8": "^4.0.16",
     "typescript": "^5.3.0",
     "vitest": "^4.0.16"
   },
   "engines": {
-    "node": ">=18.0.0"
+    "node": "22.x"
   }
 }
