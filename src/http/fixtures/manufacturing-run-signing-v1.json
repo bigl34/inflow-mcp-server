@@ -1,0 +1,44 @@
+{
+  "schemaVersion": "manufacturing-run-signing-fixtures/v1",
+  "authVersion": "manufacturing-run-hmac/v1",
+  "keys": {
+    "current": {
+      "kid": "fixture-current",
+      "secret": "synthetic-current-key-material-v1"
+    },
+    "next": {
+      "kid": "fixture-next",
+      "secret": "synthetic-next-key-material-v1"
+    }
+  },
+  "cases": [
+    {
+      "name": "current-readiness",
+      "key": "current",
+      "method": "POST",
+      "pathAndQuery": "/v1/manufacturing-runs/ready",
+      "audience": "zapier-private-app",
+      "companyId": "company-1",
+      "timestamp": "1784887200",
+      "nonce": "fixture-current-readiness-nonce",
+      "rawBodyUtf8": "{}",
+      "bodySha256Hex": "44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a",
+      "canonicalMaterialUtf8": "manufacturing-run-hmac/v1\nPOST\n/v1/manufacturing-runs/ready\nzapier-private-app\ncompany-1\n1784887200\nfixture-current-readiness-nonce\nfixture-current\n44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a",
+      "signatureHex": "a555fcc94b03d509da74d78b54253c29186cf5c3fcdfc559a06baae6505a688b"
+    },
+    {
+      "name": "next-status-with-query",
+      "key": "next",
+      "method": "POST",
+      "pathAndQuery": "/v1/manufacturing-runs/status?source=fixture",
+      "audience": "zapier-private-app",
+      "companyId": "company-1",
+      "timestamp": "1784887200",
+      "nonce": "fixture-next-status-nonce",
+      "rawBodyUtf8": "{\"operationId\":\"operation-1\"}",
+      "bodySha256Hex": "e086c7c74da97db8b2a4092d3c29714b602d0eba45d57ba57a9e41834ee2d74a",
+      "canonicalMaterialUtf8": "manufacturing-run-hmac/v1\nPOST\n/v1/manufacturing-runs/status?source=fixture\nzapier-private-app\ncompany-1\n1784887200\nfixture-next-status-nonce\nfixture-next\ne086c7c74da97db8b2a4092d3c29714b602d0eba45d57ba57a9e41834ee2d74a",
+      "signatureHex": "ecb10997f294e7941bf793ca2ebec1a0a2d9c7203671c01370451dc63e630640"
+    }
+  ]
+}

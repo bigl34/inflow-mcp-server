@@ -1,0 +1,98 @@
+{
+  "_fixture": {
+    "schemaVersion": "manufacturing-order-fixture/v1",
+    "provenance": "Synthetic contract golden derived from credential-free provider MO shapes.",
+    "relationshipProvenance": {
+      "lines": "provider-shaped",
+      "pickLines": "provider-shaped",
+      "pickMatchings": "provider-shaped",
+      "putLines": "synthetic-unobserved",
+      "manufacturingOrderOperations": "synthetic-unobserved",
+      "manufacturingOrderOperationTimesheets": "official-openapi-shape-unobserved-live"
+    }
+  },
+  "document": {
+    "manufacturingOrderId": "00000000-0000-5000-8000-000000000001",
+    "primaryFinishedProductId": "finished-product",
+    "locationId": "location-main",
+    "remarks": "fixture",
+    "status": "inProgress",
+    "isCancelled": false,
+    "isCompleted": false,
+    "completedDate": null,
+    "timestamp": "rowversion-1",
+    "unknownProviderHeader": {
+      "keep": true
+    },
+    "lines": [
+      {
+        "manufacturingOrderLineId": "root-line",
+        "parentManufacturingOrderLineId": null,
+        "productId": "finished-product",
+        "quantity": {
+          "standardQuantity": "1.0000",
+          "uomQuantity": "1.0000",
+          "serialNumbers": []
+        },
+        "unknownLineField": "keep",
+        "manufacturingOrderOperations": [
+          {
+            "manufacturingOrderOperationId": "operation-b",
+            "manufacturingOrderLineId": "root-line",
+            "operationTypeId": "operation-type-b",
+            "lineNum": 2,
+            "completedDate": null,
+            "timestamp": "operation-rowversion-b",
+            "manufacturingOrderOperationTimesheets": [
+              {
+                "manufacturingOrderOperationTimesheetId": "timesheet-b",
+                "startTime": "2026-01-02T10:00:00.000Z",
+                "endTime": null,
+                "perHourCost": "18.5000",
+                "userId": "user-fixture",
+                "user": {
+                  "name": "Fixture Operator"
+                },
+                "timestamp": "timesheet-rowversion-b"
+              }
+            ]
+          },
+          {
+            "manufacturingOrderOperationId": "operation-a",
+            "manufacturingOrderLineId": "root-line",
+            "operationTypeId": "operation-type-a",
+            "lineNum": 1,
+            "completedDate": null,
+            "timestamp": "operation-rowversion-a",
+            "manufacturingOrderOperationTimesheets": []
+          }
+        ],
+        "manufacturingOrderLines": [
+          {
+            "manufacturingOrderLineId": "component-line-b",
+            "parentManufacturingOrderLineId": "root-line",
+            "productId": "repeated-component",
+            "quantity": {
+              "standardQuantity": "1.0000",
+              "uomQuantity": "1.0000",
+              "serialNumbers": []
+            }
+          },
+          {
+            "manufacturingOrderLineId": "component-line-a",
+            "parentManufacturingOrderLineId": "root-line",
+            "productId": "repeated-component",
+            "quantity": {
+              "standardQuantity": "2.0000",
+              "uomQuantity": "2.0000",
+              "serialNumbers": []
+            }
+          }
+        ]
+      }
+    ],
+    "pickLines": [],
+    "pickMatchings": [],
+    "putLines": []
+  }
+}

@@ -42,9 +42,23 @@ describe('InflowApiError', () => {
   it('should work without api error details', () => {
     const error = new InflowApiError('Server error', 500);
 
-    expect(error.message).toBe('Server error');
+    expect(error.message).toBe('Server error [httpStatus=500]');
     expect(error.statusCode).toBe(500);
     expect(error.apiError).toBeUndefined();
+  });
+
+  it('preserves transient status and retry timing in the message for transport-boundary propagation', () => {
+    const error = new InflowApiError('Rate limited', 429, undefined, 23_000);
+
+    expect(error.retryAfterMs).toBe(23_000);
+    expect(error.message).toBe('Rate limited [httpStatus=429] [retryAfterMs=23000]');
+  });
+
+  it('preserves a rate-limit status when Retry-After is absent', () => {
+    const error = new InflowApiError('Quota exceeded', 429);
+
+    expect(error.retryAfterMs).toBeUndefined();
+    expect(error.message).toBe('Quota exceeded [httpStatus=429]');
   });
 });
 
@@ -57,8 +71,16 @@ describe('InflowClient', () => {
     rateLimitPerMinute: 60,
     maxRetries: 2,
     retryDelayMs: 100,
+    readRetryBudgetMs: 5000,
     requestTimeoutMs: 5000,
     debug: false,
+    stateDir: '/tmp/inflow-test',
+    adapterManifestHash: 'test',
+    probeBuild: 'test',
+    enableLegacyWrites: false,
+    safeWritesEnabled: false,
+    stockWritesEnabled: false,
+    writeGates: { manufacturing: false, prices: false, 'product-groups': false, 'mo-serials': false, standard: false },
   };
 
   let client: InflowClient;
@@ -343,6 +365,66 @@ describe('InflowClient', () => {
       expect(result).toEqual({ id: '123' });
     });
 
+    it('parses an HTTP-date Retry-After and preserves it after retry exhaustion', async () => {
+      vi.useFakeTimers();
+      vi.setSystemTime(new Date('2026-09-03T10:00:00Z'));
+      const noRetryClient = new InflowClient({ ...mockConfig, maxRetries: 0 });
+      const headers = new Headers({
+        'Retry-After': 'Thu, 03 Sep 2026 10:00:23 GMT',
+      });
+      fetchMock.mockResolvedValueOnce({
+        ok: false,
+        status: 429,
+        statusText: 'Too Many Requests',
+        headers,
+        json: () => Promise.resolve({ message: 'Rate limited' }),
+      });
+
+      try {
+        await noRetryClient.get('/products/123');
+        expect.fail('Expected InflowApiError to be thrown');
+      } catch (error) {
+        expect(error).toBeInstanceOf(InflowApiError);
+        if (error instanceof InflowApiError) {
+          expect(error.retryAfterMs).toBe(23_000);
+          expect(error.message).toContain('[httpStatus=429]');
+          expect(error.message).toContain('[retryAfterMs=23000]');
+        }
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it('preserves a generic 429 body status when Retry-After is absent', async () => {
+      const noRetryClient = new InflowClient({ ...mockConfig, maxRetries: 0 });
+      fetchMock.mockResolvedValueOnce({
+        ok: false,
+        status: 429,
+        statusText: 'Too Many Requests',
+        headers: new Headers(),
+        json: () => Promise.resolve({ message: 'Quota exceeded' }),
+      });
+
+      await expect(noRetryClient.get('/products/123')).rejects.toThrow(
+        'Quota exceeded [httpStatus=429]'
+      );
+    });
+
+    it('preserves a generic 503 body status after retry exhaustion', async () => {
+      const noRetryClient = new InflowClient({ ...mockConfig, maxRetries: 0 });
+      fetchMock.mockResolvedValueOnce({
+        ok: false,
+        status: 503,
+        statusText: 'Service Unavailable',
+        headers: new Headers(),
+        json: () => Promise.resolve({ message: 'Please try later' }),
+      });
+
+      await expect(noRetryClient.get('/products/123')).rejects.toThrow(
+        'Please try later [httpStatus=503]'
+      );
+    });
+
     it('should not retry on 4xx errors', async () => {
       fetchMock.mockResolvedValue({
         ok: false,
@@ -366,6 +448,69 @@ describe('InflowClient', () => {
       await expect(client.get('/products')).rejects.toThrow(InflowApiError);
       // Initial + maxRetries (2) = 3 attempts
       expect(fetchMock).toHaveBeenCalledTimes(3);
+    });
+
+    it('never retries a dispatched mutation', async () => {
+      fetchMock.mockResolvedValue({
+        ok: false,
+        status: 503,
+        statusText: 'Service Unavailable',
+        headers: new Headers(),
+        json: () => Promise.resolve({ message: 'Service down' }),
+      });
+
+      await expect(client.put('/products', { productId: 'p-1' })).rejects.toThrow(InflowApiError);
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+    });
+
+    it('prepares serialization and rate admission before the dispatch boundary', async () => {
+      fetchMock.mockResolvedValueOnce({
+        ok: true,
+        status: 200,
+        headers: new Headers(),
+        json: () => Promise.resolve({ productId: 'p-1' }),
+      });
+
+      const prepared = await client.prepareMutation<{ productId: string }>(
+        'PUT',
+        '/products',
+        { body: { productId: 'p-1' } }
+      );
+      expect(fetchMock).not.toHaveBeenCalled();
+      await expect(prepared.dispatch()).resolves.toEqual({ productId: 'p-1' });
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+      await expect(prepared.dispatch()).rejects.toThrow('MUTATION_ALREADY_DISPATCHED');
+    });
+
+    it('rejects an unserializable mutation before fetch can be dispatched', async () => {
+      const circular: Record<string, unknown> = {};
+      circular.self = circular;
+      await expect(client.prepareMutation('PUT', '/products', { body: circular }))
+        .rejects.toThrow();
+      expect(fetchMock).not.toHaveBeenCalled();
+    });
+
+    it('routes list reads through the retry executor', async () => {
+      fetchMock
+        .mockResolvedValueOnce({
+          ok: false,
+          status: 503,
+          statusText: 'Service Unavailable',
+          headers: new Headers(),
+          json: () => Promise.resolve({ message: 'Service down' }),
+        })
+        .mockResolvedValueOnce({
+          ok: true,
+          status: 200,
+          headers: new Headers(),
+          json: () => Promise.resolve([{ productId: 'p-1' }]),
+        });
+
+      await expect(client.getList('/products')).resolves.toEqual({
+        data: [{ productId: 'p-1' }],
+        totalCount: undefined,
+      });
+      expect(fetchMock).toHaveBeenCalledTimes(2);
     });
   });
 

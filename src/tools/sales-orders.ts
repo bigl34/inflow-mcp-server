@@ -41,6 +41,48 @@ const orderStatusEnum = z.enum(['Open', 'PartiallyFulfilled', 'Fulfilled', 'Canc
 
 export type SalesOrderItemPatch = z.infer<typeof salesOrderItemSchema>;
 
+/**
+ * inFlow Cloud represents money as an object, not a bare number. A PUT to
+ * /sales-orders carrying `nonCustomerCost: 12.34` returns HTTP 422; the same
+ * PUT carrying `{ value: "12.34000", isPercent: false }` succeeds.
+ *
+ * The tool schema accepts BOTH forms so existing callers passing a bare number
+ * keep working, and normalises to the money object before it reaches the API.
+ */
+export type InflowMoney = { value: string; isPercent: boolean };
+export type NonCustomerCostArg = number | { value: string; isPercent?: boolean };
+
+/** Decimal places inFlow uses in its own money payloads (e.g. "103.00000"). */
+const MONEY_SCALE = 5;
+
+export const nonCustomerCostSchema = z
+  .union([
+    z.number(),
+    z.object({
+      value: z.string(),
+      isPercent: z.boolean().optional(),
+    }),
+  ])
+  .describe(
+    'Non-customer cost. Accepts a plain number (e.g. 12.34) or the API money object '
+      + '{ value: "12.34000", isPercent: false }. Normalised to the money object before sending, '
+      + 'because the Cloud API rejects a bare number with HTTP 422.'
+  );
+
+/**
+ * Convert either accepted input form into the API's money object.
+ * A bare number is fixed to inFlow's 5-decimal money scale.
+ */
+export function toInflowMoney(input: NonCustomerCostArg): InflowMoney {
+  if (typeof input === 'number') {
+    if (!Number.isFinite(input)) {
+      throw new Error(`nonCustomerCost must be a finite number, got ${input}`);
+    }
+    return { value: input.toFixed(MONEY_SCALE), isPercent: false };
+  }
+  return { value: input.value, isPercent: input.isPercent ?? false };
+}
+
 export type SalesOrderUpsertArgs = {
   id?: string;
   orderNumber?: string;
@@ -54,7 +96,7 @@ export type SalesOrderUpsertArgs = {
   taxingSchemeId?: string;
   paymentTermsId?: string;
   currencyCode?: string;
-  nonCustomerCost?: number;
+  nonCustomerCost?: NonCustomerCostArg;
   items?: SalesOrderItemPatch[];
   remarks?: string;
   customFields?: Record<string, unknown>;
@@ -78,7 +120,7 @@ export const upsertSalesOrderToolSchema = {
   taxingSchemeId: z.string().optional().describe('Taxing scheme ID'),
   paymentTermsId: z.string().optional().describe('Payment terms ID'),
   currencyCode: z.string().optional().describe('Currency code (e.g., USD)'),
-  nonCustomerCost: z.number().optional().describe('Non-customer cost amount'),
+  nonCustomerCost: nonCustomerCostSchema.optional(),
   items: z.array(salesOrderItemSchema).optional().describe(
     'Order line items. For updates, each item patches an existing line when it has a matching `id` (salesOrderLineId) or unambiguous `productId`; items without a match are appended as new lines. Unmentioned existing lines are preserved.'
   ),
@@ -112,8 +154,8 @@ export const upsertSalesOrderToolSchema = {
 export function mergeSalesOrderUpdate(
   existing: SalesOrder,
   args: SalesOrderUpsertArgs
-): SalesOrder & { nonCustomerCost?: number } {
-  const merged: SalesOrder & { nonCustomerCost?: number } = { ...existing };
+): SalesOrder & { nonCustomerCost?: InflowMoney } {
+  const merged: SalesOrder & { nonCustomerCost?: InflowMoney } = { ...existing };
 
   // Presence-based header merge, so callers can intentionally set 0 / '' / [].
   if ('orderNumber' in args) merged.orderNumber = args.orderNumber;
@@ -130,7 +172,11 @@ export function mergeSalesOrderUpdate(
   if ('remarks' in args) merged.orderRemarks = args.remarks;
   if ('customFields' in args) merged.customFields = args.customFields;
   if ('timestamp' in args) merged.timestamp = args.timestamp;
-  if ('nonCustomerCost' in args) merged.nonCustomerCost = args.nonCustomerCost;
+  // Normalise to the API money object: a bare number here is what returned
+  // HTTP 422 on the affected order.
+  if ('nonCustomerCost' in args && args.nonCustomerCost !== undefined) {
+    merged.nonCustomerCost = toInflowMoney(args.nonCustomerCost);
+  }
 
   // Start from existing lines, drop any the caller asked to delete.
   const deleteSet = new Set(args.deleteLineIds ?? []);
@@ -386,7 +432,7 @@ export function registerSalesOrderTools(server: McpServer, client: InflowClient)
       const newSalesOrderId = randomUUID();
       const createLines: SalesOrderLine[] = (args.items ?? []).map(buildNewSalesOrderLine);
 
-      const createBody: SalesOrder & { nonCustomerCost?: number } = {
+      const createBody: SalesOrder & { nonCustomerCost?: InflowMoney } = {
         salesOrderId: newSalesOrderId,
         orderNumber: args.orderNumber,
         orderDate: args.orderDate,
@@ -404,7 +450,9 @@ export function registerSalesOrderTools(server: McpServer, client: InflowClient)
         customFields: args.customFields,
         timestamp: args.timestamp,
       };
-      if (args.nonCustomerCost !== undefined) createBody.nonCustomerCost = args.nonCustomerCost;
+      if (args.nonCustomerCost !== undefined) {
+        createBody.nonCustomerCost = toInflowMoney(args.nonCustomerCost);
+      }
 
       const createResult = await client.put<SalesOrder>('/sales-orders', createBody);
 
