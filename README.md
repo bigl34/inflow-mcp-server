@@ -194,8 +194,8 @@ Add to your Claude Desktop configuration file:
 | `copy_product_manufacturing_config` | Explicitly confirmed copy of selected components, operations, or settings without source row IDs |
 | `audit_product_group_manufacturing` | Audit option combinations and manufacturing consistency |
 | `calculate_bom_requirements` | Calculate exact direct, leaf, or net material requirements |
-| `set_product_group_config` | Preview exact-ID group option/value/variant changes |
-| `create_product_group_variants` | Preview deterministic IDs for the create/attach/compensate saga |
+| `set_product_group_config` | Preview/apply exact-ID group option/value/variant changes with preservation checks |
+| `create_product_group_variants` | Preview/apply deterministic stocked-product creation and group attachment |
 
 ### Sales Orders
 
@@ -293,6 +293,16 @@ expose an unfinished adapter.
 `customFields` keys into the complete current custom-field object, including
 explicit falsy and `null` values; omitted sibling keys are preserved. Patch
 mode does not delete keys. Replace mode retains whole-object semantics.
+
+Product creation verifies the planned product ID and explicitly supplied
+fields, allowing inFlow to populate omitted fields with defaults. The signed
+preview, idempotency mapping, and operation journal bind the canonical create
+input, including the distinction between omission and explicit `null`.
+Existing-product updates retain full desired-state verification. Recovery of a
+failed create requires the original request and retained idempotency key;
+readback can then verify the same operation without dispatching another write.
+Legacy records missing the input binding require a reviewed recovery from the
+recorded original request before that key can be reused.
 
 Idempotency keys are required for creates, additive changes, stock-affecting
 changes, and multi-step mutations. Deterministic full replacement with
@@ -500,6 +510,15 @@ entry point with `product-groups` or `mo-serials`, exact
 They prove full-array preservation/compensation or serial/inventory net-zero
 restoration respectively. A passing result does not open a runtime gate or make
 an adapter supported; release still requires a code change and normal review.
+
+Product-group configuration and variant creation are supported under the master
+safe-write gate.
+
+
+
+Concurrency, compensation and response-loss paths have automated tests.
+Retain the original preview token and idempotency key through apply and replay;
+never regenerate a create after an uncertain result.
 
 ### Look Up Serial Numbers
 

@@ -36,6 +36,7 @@ interface PlannedVariantProduct {
   name: string;
   sku: string;
   isActive: boolean;
+  itemType: string;
   selection: VariantInput['selection'];
   exists: boolean;
 }
@@ -61,6 +62,7 @@ function productReadback(
     name: actual?.name ?? '',
     sku: actual?.sku ?? '',
     isActive: actual?.isActive ?? false,
+    itemType: actual?.itemType === 'stockedProduct' ? 'StockedProduct' : actual?.itemType ?? '',
     exists: actual?.productId === expected.productId,
   };
 }
@@ -74,6 +76,7 @@ function sagaSemantic(value: VariantSagaState) {
       name: row.name,
       sku: row.sku,
       isActive: row.isActive,
+      itemType: row.itemType,
       selection: row.selection,
       exists: row.exists,
     })),
@@ -83,9 +86,14 @@ function sagaSemantic(value: VariantSagaState) {
 function groupReadbackShape(group: ProductGroup) {
   return {
     semantic: groupSemantic(group),
+    images: group.images ?? null,
     options: (group.options ?? []).map((option) => ({
       productGroupOptionId: option.productGroupOptionId ?? null,
-      optionValues: (option.optionValues ?? []).map((value) => value.productGroupOptionValueId ?? null).sort(),
+      optionValues: (option.optionValues ?? []).map((value) => ({
+        id: value.productGroupOptionValueId ?? null,
+        value: value.value ?? value.name ?? value.optionValue ?? null,
+        lineNum: value.lineNum ?? null,
+      })).sort((left, right) => String(left.id).localeCompare(String(right.id))),
     })).sort((left, right) => String(left.productGroupOptionId).localeCompare(String(right.productGroupOptionId))),
     variants: (group.productVariants ?? []).map((variant) => ({
       productVariantId: variant.productVariantId ?? null,
@@ -96,7 +104,7 @@ function groupReadbackShape(group: ProductGroup) {
 }
 
 export function registerProductGroupMutationTools(server: McpServer, client: InflowClient, config: InflowConfig): void {
-  server.tool('set_product_group_config', 'Preview exact-ID product-group option/value/variant changes. Apply stays blocked until group nested-write semantics are canary-proven.', {
+  server.tool('set_product_group_config', 'Preview or apply exact-ID product-group option/value/variant changes with verified preservation.', {
     productGroupId: z.string().min(1), mode: z.enum(['patch', 'replace']),
     options: z.array(z.object({ productGroupOptionId: z.string().min(1).optional(), name: z.string().min(1), lineNum: z.number().int().optional(), optionValues: z.array(z.object({ productGroupOptionValueId: z.string().min(1).optional(), name: z.string().min(1) })).optional() })).optional(),
     variants: z.array(z.object({ productVariantId: z.string().min(1).optional(), productId: z.string().min(1), selection })).optional(),
@@ -105,12 +113,12 @@ export function registerProductGroupMutationTools(server: McpServer, client: Inf
     assertCapability('product-groups.write', config.apiVersion);
     const policy = getSafeWritePolicy('set_product_group_config');
     const adapter: MutationAdapter<SetGroupInput, ProductGroup, ProductGroup, ProductGroup> = {
-      operation: 'set_product_group_config', resourceType: 'product-group', resourceId: (input) => input.productGroupId, mode: (input) => input.mode, adapterVersion: 'product-group/v1',
+      operation: 'set_product_group_config', resourceType: 'product-group', resourceId: (input) => input.productGroupId, mode: (input) => input.mode, adapterVersion: 'product-group/v2',
       read: (input) => fetchGroup(client, input.productGroupId),
       planIds: (input) => ({
         optionIds: (input.options ?? []).filter((row) => !row.productGroupOptionId).map(() => randomUUID()),
         valueIds: (input.options ?? []).flatMap((row) => row.optionValues ?? []).filter((row) => !row.productGroupOptionValueId).map(() => randomUUID()),
-        variantIds: (input.variants ?? []).filter((row) => !row.productVariantId).map(() => randomUUID()),
+        variantIds: (input.variants ?? []).filter((row) => !row.productVariantId).map((row) => `${input.productGroupId}_${row.productId}`),
       }),
       buildDesired: (input, current, ids) => buildDesiredGroup({ current: current!, mode: input.mode, options: input.options, variants: input.variants, removeOptionIds: input.removeOptionIds, removeOptionValueIds: input.removeOptionValueIds, removeVariantIds: input.removeVariantIds, plannedOptionIds: ids.optionIds ?? [], plannedValueIds: ids.valueIds ?? [], plannedVariantIds: ids.variantIds ?? [] }),
       semantic: groupSemantic, writeShape: (current) => current ? groupWriteShape(current) : null, timestamp: (current) => current?.timestamp, output: (value) => value,
@@ -122,49 +130,70 @@ export function registerProductGroupMutationTools(server: McpServer, client: Inf
       writesEnabled: policy.staticSupport,
       authorizeApply: () => assertSafeWriteAuthorized(config, 'set_product_group_config'),
       requiresIdempotency: (input) => input.mode === 'patch',
-      disabledCode: 'OPERATION_UNSUPPORTED', disabledMessage: 'Product-group apply stays unavailable until its release canary passes for this build.',
+      disabledCode: 'OPERATION_UNSUPPORTED', disabledMessage: 'Product-group writes are disabled by the operation policy.',
     };
     return textResult(await executeMutation(createMutationRuntime(config), adapter, args as SetGroupInput));
   });
 
-  server.tool('create_product_group_variants', 'Preview deterministic product/variant IDs for a compensated create-and-attach saga. Apply stays blocked until its canary.', {
+  server.tool('create_product_group_variants', 'Preview or apply deterministic product creation and group attachment with verified readback.', {
     productGroupId: z.string().min(1), variants: z.array(z.object({ name: z.string().min(1), sku: z.string().min(1), isActive: z.boolean().default(false), selection })).min(1).max(100), ...controls,
   }, async (args) => {
     assertCapability('product-groups.write', config.apiVersion);
     const policy = getSafeWritePolicy('create_product_group_variants');
     let expectedProducts: PlannedVariantProduct[] = [];
     const adapter: MutationAdapter<CreateVariantInput, VariantSagaState, VariantSagaState, VariantSagaState> = {
-      operation: 'create_product_group_variants', resourceType: 'product-group-variant-saga', resourceId: (input) => input.productGroupId, mode: () => 'create-attach', adapterVersion: 'product-group-variant-saga/v1', isSaga: true,
+      operation: 'create_product_group_variants', resourceType: 'product-group-variant-saga', resourceId: (input) => input.productGroupId, mode: () => 'create-attach', adapterVersion: 'product-group-variant-saga/v2', isSaga: true,
       read: async (input) => {
         const group = await fetchGroup(client, input.productGroupId);
         const plannedProducts = await Promise.all(expectedProducts.map(async (expected) => {
           try {
             const actual = await client.get<Product>(`/products/${expected.productId}`);
             return productReadback(expected, actual);
-          } catch {
-            return { ...expected, exists: false };
+          } catch (error) {
+            if (error instanceof InflowApiError && error.statusCode === 404) {
+              return { ...expected, exists: false };
+            }
+            throw error;
           }
         }));
         return { ...group, plannedProducts };
       },
-      planIds: (input) => ({ productIds: input.variants.map(() => randomUUID()), variantIds: input.variants.map(() => randomUUID()) }),
+      planIds: (input) => {
+        const productIds = input.variants.map(() => randomUUID());
+        return { productIds, variantIds: productIds.map((id) => `${input.productGroupId}_${id}`) };
+      },
       buildDesired: (input, current, ids) => {
-        const plannedProducts: PlannedVariantProduct[] = input.variants.map((row, index) => ({ productId: ids.productIds![index]!, productVariantId: ids.variantIds![index]!, name: row.name, sku: row.sku, isActive: row.isActive ?? false, selection: row.selection, exists: true }));
+        const plannedProducts: PlannedVariantProduct[] = input.variants.map((row, index) => ({ productId: ids.productIds![index]!, productVariantId: ids.variantIds![index]!, name: row.name, sku: row.sku, isActive: row.isActive ?? false, itemType: 'StockedProduct', selection: row.selection, exists: true }));
         expectedProducts = plannedProducts;
-        const group = buildDesiredGroup({ current: current!, mode: 'patch', variants: plannedProducts.map((row) => ({ productId: row.productId, selection: row.selection })), plannedOptionIds: [], plannedValueIds: [], plannedVariantIds: ids.variantIds ?? [] });
+        const variants = plannedProducts.map((row) => {
+          const existing = current?.productVariants?.find((variant) => variant.productVariantId === row.productVariantId);
+          return {
+            ...(existing ? { productVariantId: row.productVariantId } : {}),
+            productId: row.productId,
+            selection: row.selection,
+          };
+        });
+        const newVariantIds = plannedProducts.filter((row) =>
+          !current?.productVariants?.some((variant) => variant.productVariantId === row.productVariantId)
+        ).map((row) => row.productVariantId);
+        const group = buildDesiredGroup({ current: current!, mode: 'patch', variants, plannedOptionIds: [], plannedValueIds: [], plannedVariantIds: newVariantIds });
         return { ...group, plannedProducts };
       },
       semantic: sagaSemantic,
       writeShape: (current) => current ? groupWriteShape(current) : null, timestamp: (current) => current?.timestamp, output: (value) => value,
       validate: (input, current, desired) => {
-        const requestedSkus = input.variants.map((row) => row.sku.trim());
+        const requestedSkus = input.variants.map((row) => row.sku.trim().toLowerCase());
         if (requestedSkus.some((sku) => !sku) || new Set(requestedSkus).size !== requestedSkus.length) throw new Error('DUPLICATE_OR_BLANK_VARIANT_SKU');
-        const attachedSkus = new Set((current?.productVariants ?? []).map((row) => row.product?.sku).filter((sku): sku is string => Boolean(sku)));
+        const plannedIds = new Set(desired.plannedProducts.map((row) => row.productId));
+        const attachedSkus = new Set((current?.productVariants ?? [])
+          .filter((row) => !row.productId || !plannedIds.has(row.productId))
+          .map((row) => row.product?.sku?.trim().toLowerCase())
+          .filter((sku): sku is string => Boolean(sku)));
         const conflict = requestedSkus.find((sku) => attachedSkus.has(sku));
         if (conflict) throw new Error(`DUPLICATE_VARIANT_SKU: ${conflict}`);
         validateGroupMatrix(desired);
       },
-      prepareDispatch: async (_input, _current, desired) => {
+      prepareDispatch: async (_input, current, desired) => {
         for (const row of desired.plannedProducts) {
           try {
             await client.get<Product>(`/products/${row.productId}`);
@@ -179,8 +208,8 @@ export function registerProductGroupMutationTools(server: McpServer, client: Inf
           name: row.name,
           sku: row.sku,
           isActive: row.isActive,
+          itemType: 'StockedProduct',
         } })));
-        const groupWrite = await client.prepareMutation<ProductGroup>('PUT', '/product-groups', { body: writableGroup(desired) });
         return async () => {
           const attempted: PlannedVariantProduct[] = [];
           let groupAttempted = false;
@@ -189,6 +218,12 @@ export function registerProductGroupMutationTools(server: McpServer, client: Inf
               attempted.push(desired.plannedProducts[index]!);
               await productWrites[index]!.dispatch();
             }
+            const freshGroup = await fetchGroup(client, desired.productGroupId!);
+            if (stableStringify(groupWriteShape(freshGroup)) !== stableStringify(groupWriteShape(current!)) ||
+                stableStringify(freshGroup.images ?? null) !== stableStringify(current?.images ?? null)) {
+              throw new Error('GROUP_CHANGED_BEFORE_VARIANT_ATTACH');
+            }
+            const groupWrite = await client.prepareMutation<ProductGroup>('PUT', '/product-groups', { body: writableGroup(desired) });
             groupAttempted = true;
             await groupWrite.dispatch();
           } catch (error) {
@@ -242,7 +277,7 @@ export function registerProductGroupMutationTools(server: McpServer, client: Inf
       writesEnabled: policy.staticSupport,
       authorizeApply: () => assertSafeWriteAuthorized(config, 'create_product_group_variants'),
       requiresIdempotency: true,
-      disabledCode: 'OPERATION_UNSUPPORTED', disabledMessage: 'The create/attach/compensate saga stays unavailable until its release canary passes for this build.',
+      disabledCode: 'OPERATION_UNSUPPORTED', disabledMessage: 'Variant creation is disabled by the operation policy.',
     };
     return textResult(await executeMutation(createMutationRuntime(config), adapter, args as CreateVariantInput));
   });
