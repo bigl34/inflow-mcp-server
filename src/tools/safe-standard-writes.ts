@@ -477,6 +477,9 @@ export function registerSafeStandardWriteTools(server: McpServer, client: Inflow
           return desired;
         },
         semantic: (value) => semantic(value, definition),
+        inputHash: (args, current) => definition.tool === 'set_product' && current === undefined
+          ? canonicalHash(compact(args.values), 'input/product-create/v1')
+          : undefined,
         writeShape: (current) => writeShape(current, definition),
         sourceHashes: (_args, current): Record<string, string> => {
           if (definition.tool !== 'set_product' || !current) return {};
@@ -485,8 +488,24 @@ export function registerSafeStandardWriteTools(server: McpServer, client: Inflow
         timestamp: (current) => typeof current?.timestamp === 'string' ? current.timestamp : undefined,
         output: (value) => projected(value, definition),
         validate: (args, current, desired) => validateValues(args, current, desired, definition),
-        verifyReadback: (_args, _current, desired, actual) => actual !== undefined &&
-          stableStringify(semantic(actual, definition)) === stableStringify(semantic(desired, definition)),
+        verifyReadback: (args, current, desired, actual) => {
+          if (actual === undefined) return false;
+          if (definition.tool === 'set_product' && current === undefined) {
+            const fields = [definition.wireIdField, ...Object.keys(compact(args.values) as JsonRow)];
+            const requested = (value: JsonRow) => {
+              const selected = Object.fromEntries(fields.map((field) => [field, value[field]]));
+              if (isJsonRow(args.values.customFields) && isJsonRow(selected.customFields)) {
+                const actualFields = selected.customFields;
+                selected.customFields = Object.fromEntries(
+                  Object.keys(compact(args.values.customFields) as JsonRow).map((field) => [field, actualFields[field]])
+                );
+              }
+              return compact(selected);
+            };
+            return stableStringify(requested(actual)) === stableStringify(requested(desired));
+          }
+          return stableStringify(semantic(actual, definition)) === stableStringify(semantic(desired, definition));
+        },
         prepareDispatch: async (args, current, desired) => {
           const body = standardDispatchBody(args, current, desired, definition);
           const prepared = await client.prepareMutation<JsonRow>('PUT', definition.endpoint, { body });

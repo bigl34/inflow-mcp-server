@@ -20,7 +20,7 @@ export function groupSemantic(group: ProductGroup) {
     options: (group.options ?? []).map((option) => ({
       name: option.name ?? null,
       lineNum: option.lineNum ?? null,
-      values: (option.optionValues ?? []).map((value) => ({ name: value.name ?? value.value ?? value.optionValue ?? null })).sort((a, b) => (a.name ?? '').localeCompare(b.name ?? '')),
+      values: (option.optionValues ?? []).map((value) => ({ name: value.value ?? value.name ?? value.optionValue ?? null, lineNum: value.lineNum ?? null })).sort((a, b) => (a.name ?? '').localeCompare(b.name ?? '')),
     })).sort((a, b) => (a.lineNum ?? Number.MAX_SAFE_INTEGER) - (b.lineNum ?? Number.MAX_SAFE_INTEGER) || (a.name ?? '').localeCompare(b.name ?? '')),
     variants: (group.productVariants ?? []).map((variant) => ({
       productId: variant.productId ?? null,
@@ -88,13 +88,30 @@ export function buildDesiredGroup(args: {
     const optionId = existing?.productGroupOptionId ?? args.plannedOptionIds[optionIndex++];
     if (!optionId) throw new Error('MISSING_PLANNED_OPTION_ID');
     const existingValues = existing?.optionValues ?? [];
-    const values: ProductGroupOptionValue[] = input.optionValues === undefined ? existingValues : input.optionValues.map((value) => {
+    const retainedOption = options.find((row) => row.productGroupOptionId === optionId);
+    const values: ProductGroupOptionValue[] = args.mode === 'patch' || input.optionValues === undefined
+      ? [...(retainedOption?.optionValues ?? existingValues)]
+      : [];
+    for (const value of input.optionValues ?? []) {
       const existingValue = value.productGroupOptionValueId ? requireUnique(existingValues.filter((row) => row.productGroupOptionValueId === value.productGroupOptionValueId), value.productGroupOptionValueId) : undefined;
       if (value.productGroupOptionValueId && !existingValue) throw new Error(`UNKNOWN_OPTION_VALUE_ID: ${value.productGroupOptionValueId}`);
       const valueId = existingValue?.productGroupOptionValueId ?? args.plannedValueIds[valueIndex++];
       if (!valueId) throw new Error('MISSING_PLANNED_OPTION_VALUE_ID');
-      return { ...existingValue, productGroupOptionValueId: valueId, productGroupOptionId: optionId, name: value.name };
-    });
+      const at = values.findIndex((row) => row.productGroupOptionValueId === valueId);
+      const previous = existingValue ?? (at >= 0 ? values[at] : undefined);
+      const nextLineNum = Math.max(-1, ...values.map((row) => row.lineNum ?? -1)) + 1;
+      const nextValue: ProductGroupOptionValue = {
+        ...previous,
+        productGroupOptionValueId: valueId,
+        productGroupOptionId: optionId,
+        value: value.name,
+        lineNum: previous?.lineNum ?? nextLineNum,
+      };
+      delete nextValue.name;
+      delete nextValue.optionValue;
+      if (at >= 0) values[at] = nextValue;
+      else values.push(nextValue);
+    }
     const next: ProductGroupOption = { ...existing, productGroupOptionId: optionId, productGroupId: args.current.productGroupId, name: input.name, lineNum: input.lineNum ?? existing?.lineNum, optionValues: values };
     const at = options.findIndex((row) => row.productGroupOptionId === optionId);
     if (at >= 0) options[at] = next; else options.push(next);
@@ -151,7 +168,16 @@ export function writableGroup(group: ProductGroup): ProductGroup {
     defaultImageId: group.defaultImageId,
     images: group.images,
     timestamp: group.timestamp,
-    options: group.options,
+    options: group.options?.map((option) => ({
+      productGroupOptionId: option.productGroupOptionId,
+      name: option.name,
+      lineNum: option.lineNum,
+      optionValues: option.optionValues?.map((value) => ({
+        productGroupOptionValueId: value.productGroupOptionValueId,
+        lineNum: value.lineNum,
+        value: value.value ?? value.name ?? value.optionValue,
+      })),
+    })),
     productVariants: (group.productVariants ?? []).map((variant) => ({ ...variant, product: undefined })),
   };
 }

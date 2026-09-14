@@ -14,11 +14,11 @@ const gates = (safeWritesEnabled: boolean, stockWritesEnabled: boolean) => ({
 });
 
 describe('safe-write policy', () => {
-  it('supports product prices and bounded product writes', () => {
+  it('supports product prices, bounded products and group variants', () => {
     const supported = listSafeWritePolicies()
       .filter((policy) => policy.staticSupport)
       .map((policy) => policy.operation);
-    expect(supported).toEqual(['set_product_prices', 'set_product']);
+    expect(supported).toEqual(['set_product_prices', 'set_product', 'set_product_group_config', 'create_product_group_variants']);
   });
 
   it('classifies the fixed ordinary and stock operation sets', () => {

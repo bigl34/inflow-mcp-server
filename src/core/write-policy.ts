@@ -51,16 +51,14 @@ const POLICIES: readonly SafeWriteOperationPolicy[] = [
   {
     operation: 'set_product_group_config',
     classification: 'ordinary',
-    staticSupport: false,
+    staticSupport: true,
     idempotency: 'replacement-optional',
-    unsupportedReason: UNSUPPORTED_PENDING_CANARY,
   },
   {
     operation: 'create_product_group_variants',
     classification: 'ordinary',
-    staticSupport: false,
+    staticSupport: true,
     idempotency: 'required',
-    unsupportedReason: UNSUPPORTED_PENDING_CANARY,
   },
   {
     operation: 'set_customer',
