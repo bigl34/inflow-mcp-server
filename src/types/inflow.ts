@@ -42,6 +42,7 @@ export interface PaginatedResponse<T> {
 // Product types
 export interface Product {
   productId?: string;
+  itemType?: string;
   name: string;
   description?: string;
   barcode?: string;

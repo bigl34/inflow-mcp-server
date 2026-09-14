@@ -161,6 +161,7 @@ export interface MutationAdapter<TInput, TCurrent, TDesired, TOutput> {
   writeShape(current: TCurrent | undefined): unknown;
   timestamp(current: TCurrent | undefined): string | undefined;
   sourceHashes?(input: TInput, current: TCurrent | undefined): Record<string, string>;
+  inputHash?(input: TInput, current: TCurrent | undefined): string | undefined;
   output(value: TCurrent | TDesired): TOutput;
   validate?(input: TInput, current: TCurrent | undefined, desired: TDesired): Promise<void> | void;
   validateBeforeDispatch?(
@@ -391,8 +392,13 @@ async function executeMutationUnlocked<TInput extends MutationControl, TCurrent,
     : undefined;
   const operationId = existingMapping?.operationId ?? preliminarilyApproved?.operationId ?? randomUUID();
   const plannedIds = existingMapping?.plannedIds ?? preliminarilyApproved?.plannedIds ?? adapter.planIds?.(input, operationId, current) ?? {};
-  const desired = await adapter.buildDesired(input, current, plannedIds);
-  await adapter.validate?.(input, current, desired);
+  const priorRecord = await runtime.journal.get(operationId);
+  const intentCurrent = priorRecord?.inputHash !== undefined &&
+    priorRecord.currentSemanticHash === undefined && priorRecord.state !== 'prepared'
+    ? undefined
+    : current;
+  const desired = await adapter.buildDesired(input, intentCurrent, plannedIds);
+  await adapter.validate?.(input, intentCurrent, desired);
 
   const semanticDomain = `semantic/${adapter.resourceType}/${adapter.adapterVersion}`;
   const writeDomain = `write-shape/${adapter.resourceType}/${adapter.adapterVersion}`;
@@ -403,8 +409,12 @@ async function executeMutationUnlocked<TInput extends MutationControl, TCurrent,
     ? undefined
     : canonicalHash(adapter.writeShape(current), writeDomain);
   const desiredHash = canonicalHash(adapter.semantic(desired), semanticDomain);
+  const inputHash = adapter.inputHash?.(input, intentCurrent);
   if (existingMapping?.desiredHash !== undefined && existingMapping.desiredHash !== desiredHash) {
     throw new Error('IDEMPOTENCY_KEY_CONFLICT: key already binds a different desired state');
+  }
+  if (existingMapping && existingMapping.inputHash !== inputHash) {
+    throw new Error('IDEMPOTENCY_KEY_CONFLICT: key lacks matching input verification scope');
   }
 
   const resourceId = adapter.resourceId(input) ?? Object.values(plannedIds)[0]?.[0];
@@ -417,7 +427,10 @@ async function executeMutationUnlocked<TInput extends MutationControl, TCurrent,
     adapter.semantic(desired)
   );
   const entityTimestamp = adapter.timestamp(current);
-  const sourceHashes = adapter.sourceHashes?.(input, current);
+  const observedSourceHashes = adapter.sourceHashes?.(input, current);
+  const sourceHashes = inputHash
+    ? { ...observedSourceHashes, mutationInput: inputHash }
+    : observedSourceHashes;
   const confirmationScope = adapter.requiresExplicitConfirmation
     ? buildConfirmationScope(runtime, adapter, input, {
         resourceId,
@@ -515,14 +528,14 @@ async function executeMutationUnlocked<TInput extends MutationControl, TCurrent,
   ) {
     throw new Error('PREVIEW_TOKEN_SCOPE_MISMATCH: preview and apply inputs differ');
   }
-  const priorRecord = await runtime.journal.get(operationId);
   if (
     priorRecord &&
     (
       priorRecord.desiredHash !== desiredHash ||
       priorRecord.resourceType !== adapter.resourceType ||
       priorRecord.adapterVersion !== adapter.adapterVersion ||
-      priorRecord.resourceId !== resourceId
+      priorRecord.resourceId !== resourceId ||
+      priorRecord.inputHash !== inputHash
     )
   ) {
     throw new Error('IDEMPOTENCY_KEY_CONFLICT: prior operation journal scope differs');
@@ -571,7 +584,7 @@ async function executeMutationUnlocked<TInput extends MutationControl, TCurrent,
       });
     }
     const readbackVerified = adapter.verifyReadback
-      ? await adapter.verifyReadback(input, current, desired, replayActual)
+      ? await adapter.verifyReadback(input, intentCurrent, desired, replayActual)
       : replayActual !== undefined &&
         canonicalHash(adapter.semantic(replayActual), semanticDomain) === desiredHash;
     const actual = replayActual === undefined ? undefined : adapter.output(replayActual);
@@ -661,11 +674,13 @@ async function executeMutationUnlocked<TInput extends MutationControl, TCurrent,
     const winner = await runtime.journal.getOrCreateIdempotency(idempotencyHash, {
       operationId,
       desiredHash,
+      inputHash,
       plannedIds,
     });
     if (
       winner.operationId !== operationId ||
       winner.desiredHash !== desiredHash ||
+      winner.inputHash !== inputHash ||
       stableStringify(winner.plannedIds ?? {}) !== stableStringify(plannedIds)
     ) {
       throw new Error('IDEMPOTENCY_KEY_CONFLICT: mapping changed after confirmation; re-run preview');
@@ -687,6 +702,7 @@ async function executeMutationUnlocked<TInput extends MutationControl, TCurrent,
     resourceId,
     adapterVersion: adapter.adapterVersion,
     desiredHash,
+    inputHash,
     currentSemanticHash,
     currentWriteShapeHash,
     plannedIds,

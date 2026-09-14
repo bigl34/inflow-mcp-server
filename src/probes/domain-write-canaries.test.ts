@@ -84,7 +84,7 @@ describe('domain release canaries', () => {
       throw new Error(`unexpected PUT ${path}`);
     });
     const uuids = [
-      'product-1', 'option-a', 'value-a1', 'value-a2', 'variant-1',
+      'product-1', 'option-a', 'value-a1', 'value-a2',
       'option-b', 'value-b1', 'stale-option', 'stale-value',
     ];
 

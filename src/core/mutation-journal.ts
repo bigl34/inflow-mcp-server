@@ -46,6 +46,7 @@ export interface MutationJournalRecord {
   resourceId?: string;
   adapterVersion: string;
   desiredHash: string;
+  inputHash?: string;
   currentSemanticHash?: string;
   currentWriteShapeHash?: string;
   plannedIds?: Record<string, string[]>;
@@ -193,6 +194,7 @@ export class MutationJournal {
   async getIdempotency(keyHash: string): Promise<{
     operationId: string;
     desiredHash: string;
+    inputHash?: string;
     plannedIds?: Record<string, string[]>;
   } | undefined> {
     await this.initialize();
@@ -206,20 +208,20 @@ export class MutationJournal {
 
   async putIdempotency(
     keyHash: string,
-    value: { operationId: string; desiredHash: string; plannedIds?: Record<string, string[]> }
+    value: { operationId: string; desiredHash: string; inputHash?: string; plannedIds?: Record<string, string[]> }
   ): Promise<void> {
     await this.getOrCreateIdempotency(keyHash, value);
   }
 
   async getOrCreateIdempotency(
     keyHash: string,
-    value: { operationId: string; desiredHash: string; plannedIds?: Record<string, string[]> }
-  ): Promise<{ operationId: string; desiredHash: string; plannedIds?: Record<string, string[]> }> {
+    value: { operationId: string; desiredHash: string; inputHash?: string; plannedIds?: Record<string, string[]> }
+  ): Promise<{ operationId: string; desiredHash: string; inputHash?: string; plannedIds?: Record<string, string[]> }> {
     await this.initialize();
     return this.withLock(`idempotency-${keyHash}`, async () => {
       const current = await this.getIdempotency(keyHash);
       if (current) {
-        if (current.desiredHash !== value.desiredHash) {
+        if (current.desiredHash !== value.desiredHash || current.inputHash !== value.inputHash) {
           throw new Error('IDEMPOTENCY_KEY_CONFLICT: key already binds a different desired state');
         }
         return current;

@@ -393,9 +393,10 @@ export async function runApprovedProductGroupCanary(
   const before = await fetchGroup(client, resourceId);
   assertProductGroupFixture(before, fixture);
 
+  const productId = uuid();
   const ids = {
-    product: uuid(), optionA: uuid(), valueA1: uuid(), valueA2: uuid(),
-    variant: uuid(), optionB: uuid(), valueB1: uuid(), staleOption: uuid(), staleValue: uuid(),
+    product: productId, optionA: uuid(), valueA1: uuid(), valueA2: uuid(),
+    variant: `${resourceId}_${productId}`, optionB: uuid(), valueB1: uuid(), staleOption: uuid(), staleValue: uuid(),
   };
   const result: ProductGroupProbeResult = {
     evidenceType: 'release-canary/v1', domain: 'product-groups', resourceId,
@@ -416,6 +417,7 @@ export async function runApprovedProductGroupCanary(
       name: fixture.productName,
       sku: fixture.productSku,
       isActive: false,
+      itemType: 'StockedProduct',
     });
     const createdProduct = await client.get<Product>(`/products/${ids.product}`);
     productCreated = createdProduct.productId === ids.product && createdProduct.sku === fixture.productSku && createdProduct.isActive === false;
@@ -483,7 +485,7 @@ export async function runApprovedProductGroupCanary(
     const addedB = current.options?.find((row) => row.productGroupOptionId === ids.optionB);
     const updatedVariant = current.productVariants?.find((row) => row.productVariantId === ids.variant);
     result.updateWorked = updatedA?.name === '__CANARY_OPTION_A_UPDATED__' &&
-      updatedA.optionValues?.find((row) => row.productGroupOptionValueId === ids.valueA2)?.name === '__CANARY_VALUE_A2_UPDATED__';
+      updatedA.optionValues?.find((row) => row.productGroupOptionValueId === ids.valueA2)?.value === '__CANARY_VALUE_A2_UPDATED__';
     result.fullArrayPreserved = Boolean(
       updatedA && addedB && updatedVariant && normalizeSelection(updatedVariant.variantOption).length === 2
     );
