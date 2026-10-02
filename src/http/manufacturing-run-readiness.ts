@@ -110,7 +110,9 @@ export async function evaluateManufacturingRunReadiness(
           ok: false,
           code: safeCode(value.reasonCode, 'WRITE_GATE_CLOSED'),
         };
-    attestation = value.attestationState === 'valid'
+    const attestationSatisfied =
+      value.attestationState === 'valid' || value.attestationState === 'not-required';
+    attestation = attestationSatisfied
       ? { ok: true, state: 'valid' }
       : {
           ok: false,

@@ -8,7 +8,6 @@ export interface CoordinatorWriteGateStatus extends GateStatus {
     'INFLOW_ENABLE_SAFE_WRITES',
     'INFLOW_ENABLE_STOCK_WRITES',
     'INFLOW_ENABLE_MANUFACTURING_PICK_BATCH_WRITES',
-    'manufacturing-pick-batch-v1 attestation',
   ];
   masterEnabled: boolean;
   stockEnabled: boolean;
@@ -20,15 +19,32 @@ export interface ManufacturingOperationCompletionGateStatus extends GateStatus {
     'INFLOW_ENABLE_SAFE_WRITES',
     'INFLOW_ENABLE_STOCK_WRITES',
     'INFLOW_ENABLE_MANUFACTURING_PICK_BATCH_WRITES',
-    'manufacturing-pick-batch-v1 attestation',
     'INFLOW_ENABLE_MANUFACTURING_OPERATION_COMPLETION_WRITES',
-    'manufacturing-operation-completion-v1 attestation',
   ];
   coordinatorEnabled: boolean;
   completionEnvironmentEnabled: boolean;
 }
 
-export function resolveWriteGate(config: InflowConfig, domain: WriteDomain) {
+const ATTESTATION_EXEMPT_DOMAINS: ReadonlySet<WriteDomain> = new Set([
+  'manufacturing-pick-batch-v1',
+  'manufacturing-operation-completion-v1',
+]);
+
+function resolveEnvironmentOnlyGate(config: InflowConfig, domain: WriteDomain): GateStatus {
+  const environmentEnabled = config.writeGates[domain] === true;
+  return {
+    domain,
+    environmentEnabled,
+    attestationState: 'not-required',
+    enabled: environmentEnabled,
+    reasonCode: environmentEnabled ? undefined : 'ENVIRONMENT_GATE_DISABLED',
+  };
+}
+
+export async function resolveWriteGate(config: InflowConfig, domain: WriteDomain): Promise<GateStatus> {
+  if (ATTESTATION_EXEMPT_DOMAINS.has(domain)) {
+    return resolveEnvironmentOnlyGate(config, domain);
+  }
   const baseHost = new URL(config.baseUrl).host.toLowerCase();
   return loadGateStatus({
     stateDir: config.stateDir,
@@ -64,7 +80,6 @@ export async function resolveCoordinatorWriteGate(
       'INFLOW_ENABLE_SAFE_WRITES',
       'INFLOW_ENABLE_STOCK_WRITES',
       'INFLOW_ENABLE_MANUFACTURING_PICK_BATCH_WRITES',
-      'manufacturing-pick-batch-v1 attestation',
     ],
     masterEnabled,
     stockEnabled,
@@ -92,9 +107,7 @@ export async function resolveManufacturingOperationCompletionGate(
       'INFLOW_ENABLE_SAFE_WRITES',
       'INFLOW_ENABLE_STOCK_WRITES',
       'INFLOW_ENABLE_MANUFACTURING_PICK_BATCH_WRITES',
-      'manufacturing-pick-batch-v1 attestation',
       'INFLOW_ENABLE_MANUFACTURING_OPERATION_COMPLETION_WRITES',
-      'manufacturing-operation-completion-v1 attestation',
     ],
     coordinatorEnabled: coordinator.enabled,
     completionEnvironmentEnabled,

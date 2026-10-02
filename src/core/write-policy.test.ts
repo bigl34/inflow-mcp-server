@@ -18,7 +18,9 @@ describe('safe-write policy', () => {
     const supported = listSafeWritePolicies()
       .filter((policy) => policy.staticSupport)
       .map((policy) => policy.operation);
-    expect(supported).toEqual(['set_product_prices', 'set_product', 'set_product_group_config', 'create_product_group_variants']);
+    expect(supported).toEqual(listSafeWritePolicies().map((policy) => policy.operation));
+    expect(supported).toContain('set_stock_adjustment');
+    expect(supported).toContain('remove_webhook');
   });
 
   it('classifies the fixed ordinary and stock operation sets', () => {
@@ -47,7 +49,7 @@ describe('safe-write policy', () => {
     });
     expect(classifySafeWriteOperations(['set_product_prices', 'set_sales_order'])).toEqual({
       classification: 'stock',
-      staticSupport: false,
+      staticSupport: true,
       unknownOperations: [],
     });
     expect(classifySafeWriteOperations(['set_product_prices', 'future_operation'])).toEqual({
@@ -78,14 +80,20 @@ describe('safe-write policy', () => {
   });
 
   it('reports static unsupported state before runtime gate state', () => {
-    expect(evaluateSafeWriteAuthorization(gates(false, false), 'set_customer')).toMatchObject({
+    expect(evaluateSafeWriteAuthorization(gates(false, false), 'future_operation')).toMatchObject({
       staticSupport: false,
       effectiveApplyEnabled: false,
       reasonCode: 'OPERATION_UNSUPPORTED',
     });
-    expect(() => assertSafeWriteAuthorized(gates(true, true), 'set_customer')).toThrow(
+    expect(() => assertSafeWriteAuthorized(gates(true, true), 'future_operation')).toThrow(
       /OPERATION_UNSUPPORTED/
     );
+    expect(evaluateSafeWriteAuthorization(gates(false, false), 'set_customer')).toMatchObject({
+      staticSupport: true,
+      effectiveApplyEnabled: false,
+      reasonCode: 'SAFE_WRITES_DISABLED',
+    });
+    expect(() => assertSafeWriteAuthorized(gates(true, false), 'set_customer')).not.toThrow();
     expect(() => assertSafeWriteAuthorized(gates(false, false), 'set_product_prices')).toThrow(
       /SAFE_WRITES_DISABLED/
     );

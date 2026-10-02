@@ -191,6 +191,38 @@ export class MutationJournal {
     }));
   }
 
+  /**
+   * Creates journaled before input-scope binding carry no `inputHash` on the
+   * record or its idempotency mapping, so idempotent readback-only replay
+   * refuses them. Restore the binding from the retained original request. The
+   * caller must first prove that request reproduces the record's desiredHash;
+   * replay re-checks it. Records that already carry a binding are never rebound.
+   */
+  async restoreInputScope(operationId: string, inputHash: string): Promise<MutationJournalRecord> {
+    if (!/^[a-f0-9]{64}$/.test(inputHash)) throw new Error('INVALID_INPUT_HASH: expected a sha256 hex digest');
+    return this.withLock(`operation-${operationId}`, async () => {
+      const current = await this.get(operationId);
+      if (!current) throw new Error(`UNKNOWN_OPERATION: ${operationId}`);
+      if (current.inputHash !== undefined) throw new Error(`INPUT_SCOPE_ALREADY_BOUND: ${operationId}`);
+      const reconcilable = ['dispatched', 'unknown_after_write', 'applied_unverified', 'partial_applied'];
+      if (!reconcilable.includes(current.state) || current.currentSemanticHash !== undefined || !current.idempotencyKeyHash) {
+        throw new Error(`INPUT_SCOPE_NOT_RESTORABLE: ${operationId} is not a reconcilable keyed create`);
+      }
+      const keyHash = current.idempotencyKeyHash;
+      await this.withLock(`idempotency-${keyHash}`, async () => {
+        const mapping = await this.getIdempotency(keyHash);
+        if (!mapping || mapping.operationId !== operationId || mapping.desiredHash !== current.desiredHash) {
+          throw new Error(`IDEMPOTENCY_MAPPING_MISMATCH: ${operationId}`);
+        }
+        if (mapping.inputHash !== undefined) throw new Error(`INPUT_SCOPE_ALREADY_BOUND: ${operationId}`);
+        await this.atomicWrite(this.idempotencyPath(keyHash), { ...mapping, inputHash });
+      });
+      const next = { ...current, inputHash, updatedAt: new Date().toISOString() };
+      await this.put(next);
+      return next;
+    });
+  }
+
   async getIdempotency(keyHash: string): Promise<{
     operationId: string;
     desiredHash: string;

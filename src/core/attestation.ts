@@ -40,7 +40,7 @@ export interface CanaryAttestation {
 export interface GateStatus {
   domain: WriteDomain;
   environmentEnabled: boolean;
-  attestationState: 'valid' | 'missing' | 'invalid' | 'expired';
+  attestationState: 'valid' | 'missing' | 'invalid' | 'expired' | 'not-required';
   enabled: boolean;
   reasonCode?: string;
   issuedAt?: string;

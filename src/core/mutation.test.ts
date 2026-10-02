@@ -1,5 +1,4 @@
-import { chmod, mkdtemp, readdir } from 'node:fs/promises';
-import { tmpdir } from 'node:os';
+import { readdir } from 'node:fs/promises';
 import { join } from 'node:path';
 import { describe, expect, it, vi } from 'vitest';
 import { MutationJournal } from './mutation-journal.js';
@@ -9,6 +8,7 @@ import {
   type MutationAdapter,
 } from './mutation.js';
 import { PreviewTokenService, tenantFingerprint } from './preview-token.js';
+import { createTempStateDir } from './temp-state.fixtures.js';
 
 type Row = { id: string; name: string; timestamp: string; rowId: string };
 type Input = {
@@ -25,8 +25,7 @@ type Input = {
 };
 
 async function harness(writeThrows = false) {
-  const stateDir = await mkdtemp(join(tmpdir(), 'inflow-mutation-'));
-  await chmod(stateDir, 0o700);
+  const stateDir = await createTempStateDir('inflow-mutation-');
   let current: Row = { id: 'p-1', name: 'Before', timestamp: 't-1', rowId: 'row-1' };
   const dispatch = vi.fn(async (_input: Input, _before: Row | undefined, desired: Row) => {
     current = { ...desired, timestamp: 't-2' };
@@ -239,8 +238,7 @@ describe('mutation executor', () => {
   });
 
   it('leaves no operation or idempotency files when confirmation is rejected', async () => {
-    const stateDir = await mkdtemp(join(tmpdir(), 'inflow-mutation-confirmation-reject-'));
-    await chmod(stateDir, 0o700);
+    const stateDir = await createTempStateDir('inflow-mutation-confirmation-reject-');
     let current: Row | undefined;
     const dispatch = vi.fn(async (_input: Input, _before: Row | undefined, desired: Row) => {
       current = desired;
@@ -324,8 +322,7 @@ describe('mutation executor', () => {
   });
 
   it('dispatches exactly once when confirmed and unconfirmed same-key creates race', async () => {
-    const stateDir = await mkdtemp(join(tmpdir(), 'inflow-mutation-confirmation-race-'));
-    await chmod(stateDir, 0o700);
+    const stateDir = await createTempStateDir('inflow-mutation-confirmation-race-');
     let current: Row | undefined;
     const dispatch = vi.fn(async (_input: Input, _before: Row | undefined, desired: Row) => {
       await new Promise((resolve) => setTimeout(resolve, 10));
@@ -392,8 +389,7 @@ describe('mutation executor', () => {
   });
 
   it('mints and token-binds idempotency for a tokenless create preview', async () => {
-    const stateDir = await mkdtemp(join(tmpdir(), 'inflow-mutation-create-'));
-    await chmod(stateDir, 0o700);
+    const stateDir = await createTempStateDir('inflow-mutation-create-');
     let current: Row | undefined;
     const dispatch = vi.fn(async (_input: Input, _before: Row | undefined, desired: Row) => { current = desired; });
     const adapter: MutationAdapter<Input, Row, Row, Row> = {
@@ -541,8 +537,7 @@ describe('mutation executor', () => {
   });
 
   it('verifies exact-target deletion by absence and reports repeated absence', async () => {
-    const stateDir = await mkdtemp(join(tmpdir(), 'inflow-mutation-delete-'));
-    await chmod(stateDir, 0o700);
+    const stateDir = await createTempStateDir('inflow-mutation-delete-');
     let current: Row | undefined = {
       id: 'w-1',
       name: 'Webhook',

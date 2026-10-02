@@ -33,7 +33,11 @@ import {
   type ManufacturingRunAuthOptions,
   type ManufacturingRunHmacKeyring,
 } from './manufacturing-run-auth.js';
-import { effectiveBuildRunAvailableQuantity } from '../services/inventory-summaries.js';
+import {
+  directBuildOwnershipEvidence,
+  directBuildReservationCredit,
+  effectiveBuildRunAvailableQuantity,
+} from '../services/inventory-summaries.js';
 import {
   createManufacturingRunEnvelope,
   decodeManufacturingRunRemarks,
@@ -55,6 +59,7 @@ import {
   type ManufacturingRunNotificationDeliveryUnknownRequest,
   type ManufacturingRunNotificationReconcileRequest,
   type ManufacturingRunNotificationContext,
+  type ManufacturingRunOperatorRearmNoDispatchRequest,
   type ManufacturingRunOperatorRearmProvenNoWriteRequest,
   type ManufacturingRunOperatorResolveRequest,
   type ManufacturingRunStatusRequest,
@@ -72,6 +77,13 @@ export interface ManufacturingRunCoordinatorHttpFacade {
   rearmProvenNoWrite(input: {
     operationId: string;
     expectedRevision: number;
+  }): Promise<ManufacturingRunStatus>;
+  rearmNoDispatchConflict(input: {
+    operationId: string;
+    expectedRevision: number;
+    operatorId: string;
+    approvedAt: number;
+    approvalEvidence: ManufacturingRunAuthContext;
   }): Promise<ManufacturingRunStatus>;
   snapshot(operationId: string): ManufacturingRunEnvelopeSnapshot;
   resolveManual(input: {
@@ -164,6 +176,7 @@ export interface CoordinatorComponentResolverOptions {
 
 interface DurableRunMetadata {
   finishedSerial: string | null;
+  finishedProductId: string | null;
   locationId: string | null;
   notificationContext: ManufacturingRunNotificationContext | null;
 }
@@ -201,6 +214,9 @@ function durableRunMetadata(
   const finishedSerial = typeof identity?.finishedSerial === 'string'
     ? normalizedSerial(identity.finishedSerial)
     : '';
+  const finishedProductId = typeof identity?.finishedProductId === 'string'
+    ? identity.finishedProductId.trim()
+    : '';
   const locationId = typeof artifact?.locationId === 'string'
     ? artifact.locationId.trim()
     : '';
@@ -227,6 +243,7 @@ function durableRunMetadata(
   }
   return {
     finishedSerial: finishedSerial || null,
+    finishedProductId: finishedProductId || null,
     locationId: locationId || null,
     notificationContext,
   };
@@ -525,6 +542,25 @@ function flattenedManufacturingOrderLines(
   return flattened;
 }
 
+function rootOutputQuantity(
+  order: ManufacturingOrder,
+  rootLineId: string
+): number {
+  const matches = flattenedManufacturingOrderLines(order).filter(
+    (entry) => entry.line.manufacturingOrderLineId === rootLineId
+  );
+  if (matches.length !== 1) return 0;
+  const quantity = matches[0]!.line.quantity?.standardQuantity ??
+    matches[0]!.line.quantity?.uomQuantity;
+  if (quantity === undefined) return 0;
+  try {
+    const parsed = Number(normalizeDecimal(quantity));
+    return Number.isFinite(parsed) && parsed > 0 ? parsed : 0;
+  } catch {
+    return 0;
+  }
+}
+
 function activeManufacturingOrderOwnsComponent(input: {
   order: ManufacturingOrder;
   manufacturingOrderId: string;
@@ -810,11 +846,45 @@ export function createCoordinatorComponentResolver(
             (sum, quantity) => sum + quantity,
             0
           );
-          ownedBuildReservedQuantity = ownership.reduce(
+          const nestedBuildReservedQuantity = ownership.reduce(
             (sum, entry, index) =>
               entry.ownership.nested ? sum + quantities[index]! : sum,
             0
           );
+          if (nestedBuildReservedQuantity > 0) {
+            ownedBuildReservedQuantity = nestedBuildReservedQuantity;
+          } else {
+            const finishedProductId = parentMetadata.finishedProductId;
+            const outputQuantity = rootOutputQuantity(
+              currentOrder,
+              parent.rootLineId
+            );
+            if (finishedProductId !== null && outputQuantity > 0) {
+              const finishedRate = options.store.consumeRateBudget({
+                now: options.now?.() ?? new Date(),
+              });
+              if (!finishedRate.allowed) throw new Error('RATE_BUDGET_EXHAUSTED');
+              const finishedSummary = await options.client.get<ProductSummary>(
+                `/products/${finishedProductId}/summary`,
+                { include: ['locationSummaries', 'sublocationSummaries'] }
+              );
+              ownedBuildReservedQuantity = directBuildReservationCredit(
+                summary,
+                directBuildOwnershipEvidence({
+                  order: currentOrder,
+                  componentLineIds: sameProductComponents.map(
+                    (component) => component.rawLineId
+                  ),
+                  componentQuantities: quantities,
+                  summaryRow: summary,
+                  finishedProductReservedForSales: positiveInventoryQuantity(
+                    finishedSummary.quantityReservedForSales
+                  ),
+                  finishedOutputQuantity: outputQuantity,
+                })
+              );
+            }
+          }
         }
       }
       const availableBuckets = availableInventoryBuckets(summary, {
@@ -1362,6 +1432,28 @@ async function dispatchRoute(
     }
     const status = options.coordinator.resolveManual({
       ...request,
+      approvalEvidence: authContext,
+    });
+    const snapshot = options.coordinator.snapshot(status.operationId);
+    return {
+      status: 200,
+      body: contextualEnvelope(options.store, snapshot),
+    };
+  }
+  if (route === '/v1/manufacturing-runs/operator/rearm-no-dispatch') {
+    const request = body as ManufacturingRunOperatorRearmNoDispatchRequest;
+    if (request.approvedAt !== authContext.timestamp) {
+      throw new RequestFailure(
+        400,
+        'MANUAL_APPROVAL_TIMESTAMP_MISMATCH',
+        'Approval timestamp must match the authenticated request timestamp'
+      );
+    }
+    const status = await options.coordinator.rearmNoDispatchConflict({
+      operationId: request.operationId,
+      expectedRevision: request.expectedRevision,
+      operatorId: request.operatorId,
+      approvedAt: request.approvedAt,
       approvalEvidence: authContext,
     });
     const snapshot = options.coordinator.snapshot(status.operationId);

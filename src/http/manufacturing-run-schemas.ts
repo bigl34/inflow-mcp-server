@@ -123,6 +123,14 @@ export const manufacturingRunOperatorResolveSchema = z.object({
   approvedAt: z.number().int().positive(),
 }).strict();
 
+export const manufacturingRunOperatorRearmNoDispatchSchema = z.object({
+  operationId: identifier,
+  expectedRevision: z.number().int().nonnegative(),
+  operatorId: identifier,
+  action: z.literal('rearm-no-dispatch'),
+  approvedAt: z.number().int().positive(),
+}).strict();
+
 export const manufacturingRunOperatorRearmProvenNoWriteSchema = z.object({
   operationId: identifier,
   expectedRevision: z.number().int().nonnegative(),
@@ -147,6 +155,8 @@ export const manufacturingRunRouteSchemas = Object.freeze({
     manufacturingRunOperatorResolveSchema,
   '/v1/manufacturing-runs/operator/rearm-proven-no-write':
     manufacturingRunOperatorRearmProvenNoWriteSchema,
+  '/v1/manufacturing-runs/operator/rearm-no-dispatch':
+    manufacturingRunOperatorRearmNoDispatchSchema,
 });
 
 export type ManufacturingRunRoute =
@@ -173,6 +183,8 @@ export type ManufacturingRunOperatorResolveRequest =
   z.infer<typeof manufacturingRunOperatorResolveSchema>;
 export type ManufacturingRunOperatorRearmProvenNoWriteRequest =
   z.infer<typeof manufacturingRunOperatorRearmProvenNoWriteSchema>;
+export type ManufacturingRunOperatorRearmNoDispatchRequest =
+  z.infer<typeof manufacturingRunOperatorRearmNoDispatchSchema>;
 
 export function isManufacturingRunRoute(
   route: string

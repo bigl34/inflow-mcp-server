@@ -1,10 +1,8 @@
-import { chmod, mkdtemp } from 'node:fs/promises';
-import { tmpdir } from 'node:os';
-import { join } from 'node:path';
 import { describe, expect, it, vi } from 'vitest';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import type { InflowClient } from '../client/inflow.js';
 import type { InflowConfig } from '../config.js';
+import { createTempStateDir } from '../core/temp-state.fixtures.js';
 import type { Product } from '../types/inflow.js';
 import { registerManufacturingCopyTool } from './product-manufacturing-copy.js';
 
@@ -60,8 +58,7 @@ function config(stateDir: string): InflowConfig {
 }
 
 async function harness(options: { driftSourceBeforeDispatch?: boolean } = {}) {
-  const stateDir = await mkdtemp(join(tmpdir(), 'inflow-manufacturing-copy-'));
-  await chmod(stateDir, 0o700);
+  const stateDir = await createTempStateDir('inflow-manufacturing-copy-');
   let source = product('source', true);
   let target = product('target', false);
   let sourceReads = 0;

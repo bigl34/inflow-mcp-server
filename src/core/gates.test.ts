@@ -50,8 +50,12 @@ function config(stateDir: string): InflowConfig {
   };
 }
 
-async function writeCoordinatorAttestation(value: InflowConfig): Promise<void> {
+async function writeCoordinatorAttestation(
+  value: InflowConfig,
+  options: { expired?: boolean } = {}
+): Promise<void> {
   const host = new URL(value.baseUrl).host.toLowerCase();
+  const expiresOffsetMs = options.expired ? -60_000 : 60_000;
   const unsigned: UnsignedCanaryAttestation = {
     schemaVersion: 'canary-attestation/v1',
     domain: 'manufacturing-pick-batch-v1',
@@ -64,7 +68,7 @@ async function writeCoordinatorAttestation(value: InflowConfig): Promise<void> {
     contractVersion: 'mutation/v1',
     approvalNonce: 'approval-1',
     issuedAt: new Date(Date.now() - 1_000).toISOString(),
-    expiresAt: new Date(Date.now() + 60_000).toISOString(),
+    expiresAt: new Date(Date.now() + expiresOffsetMs).toISOString(),
     passed: true,
     cleanupVerified: true,
     confirmedResidualIds: [],
@@ -146,15 +150,14 @@ async function writeOperationCompletionAttestation(
 }
 
 describe('coordinator write gate', () => {
-  it('requires master, then stock, then the dedicated environment gate and attestation', async () => {
+  it('requires master, then stock, then the dedicated environment gate; no attestation file is needed', async () => {
     root = await mkdtemp(join(tmpdir(), 'inflow-coordinator-gates-'));
     const value = config(join(root, 'state'));
-    await writeCoordinatorAttestation(value);
 
     await expect(resolveCoordinatorWriteGate(value)).resolves.toMatchObject({
       enabled: false,
       reasonCode: 'SAFE_WRITES_DISABLED',
-      attestationState: 'valid',
+      attestationState: 'not-required',
     });
     value.safeWritesEnabled = true;
     await expect(resolveCoordinatorWriteGate(value)).resolves.toMatchObject({
@@ -166,6 +169,7 @@ describe('coordinator write gate', () => {
       enabled: true,
       reasonCode: undefined,
       coordinatorEnvironmentEnabled: true,
+      attestationState: 'not-required',
     });
     value.writeGates['manufacturing-pick-batch-v1'] = false;
     await expect(resolveCoordinatorWriteGate(value)).resolves.toMatchObject({
@@ -175,36 +179,31 @@ describe('coordinator write gate', () => {
     });
   });
 
-  it('never treats master and stock gates as substitutes for attestation', async () => {
-    root = await mkdtemp(join(tmpdir(), 'inflow-coordinator-no-attestation-'));
+  it('ignores an expired coordinator attestation file', async () => {
+    root = await mkdtemp(join(tmpdir(), 'inflow-coordinator-expired-attestation-'));
     const value = config(join(root, 'state'));
     value.safeWritesEnabled = true;
     value.stockWritesEnabled = true;
+    await writeCoordinatorAttestation(value, { expired: true });
     await expect(resolveCoordinatorWriteGate(value)).resolves.toMatchObject({
-      enabled: false,
-      reasonCode: 'ATTESTATION_MISSING',
+      enabled: true,
+      reasonCode: undefined,
+      attestationState: 'not-required',
     });
   });
 
-  it('requires the base coordinator gate plus a separate completion gate and attestation', async () => {
+  it('requires the base coordinator gate plus a separate completion environment gate', async () => {
     root = await mkdtemp(join(tmpdir(), 'inflow-operation-completion-gates-'));
     const value = config(join(root, 'state'));
     value.safeWritesEnabled = true;
     value.stockWritesEnabled = true;
-    await writeCoordinatorAttestation(value);
-    await expect(resolveManufacturingOperationCompletionGate(value))
-      .resolves.toMatchObject({
-        enabled: false,
-        reasonCode: 'ATTESTATION_MISSING',
-        coordinatorEnabled: true,
-      });
-
-    await writeOperationCompletionAttestation(value);
     await expect(resolveManufacturingOperationCompletionGate(value))
       .resolves.toMatchObject({
         enabled: false,
         reasonCode: 'ENVIRONMENT_GATE_DISABLED',
+        coordinatorEnabled: true,
         completionEnvironmentEnabled: false,
+        attestationState: 'not-required',
       });
 
     value.writeGates['manufacturing-operation-completion-v1'] = true;

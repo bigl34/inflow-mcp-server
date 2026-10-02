@@ -2,6 +2,8 @@ import { describe, expect, it } from 'vitest';
 import {
   canonicalInventorySummaryProjection,
   canonicalSerialInventoryProjection,
+  directBuildOwnershipEvidence,
+  directBuildReservationCredit,
   effectiveBuildRunAvailableQuantity,
 } from './inventory-summaries.js';
 
@@ -260,5 +262,164 @@ describe('manufacturing canary inventory projections', () => {
     ], [{ productId: 'product-a', serial: 'SERIAL-A' }])).toThrow(
       'CANARY_SERIAL_DUPLICATE_POSITIVE_STOCK'
     );
+  });
+});
+
+describe('direct build reservation credit', () => {
+  const liveFrontMudguard = {
+    quantityOnHand: '1',
+    quantityAvailable: '-1',
+    rawQuantityAvailable: '0',
+    quantityReserved: '2',
+    quantityReservedForSales: '0',
+    quantityReservedForManufacturing: '1',
+    quantityReservedForTransfers: '0',
+    quantityReservedForBuilds: '1',
+    quantityPicked: '0',
+  };
+  const fullyOwnedEvidence = {
+    ownedManufacturingReservedQuantity: 1,
+    remainingManufacturingOrderLineQuantity: 1,
+    soleQualifyingManufacturingOrderLine: true,
+    finishedProductOpenDemandQuantity: 1,
+  };
+
+  it('credits the live exactly-sufficient shape and clears the availability gate', () => {
+    const credit = directBuildReservationCredit(
+      liveFrontMudguard,
+      fullyOwnedEvidence
+    );
+    expect(credit).toBe(1);
+    expect(effectiveBuildRunAvailableQuantity(liveFrontMudguard, {
+      allowBuildReserved: true,
+      ownedBuildReservedQuantity: credit,
+      ownedManufacturingReservedQuantity: 1,
+      requiredQuantity: 1,
+    })).toBe(1);
+  });
+
+  it('blocks both runs when two manufacturing orders share one build reservation', () => {
+    const sharedPool = {
+      quantityOnHand: '1',
+      quantityAvailable: '-2',
+      rawQuantityAvailable: '0',
+      quantityReserved: '3',
+      quantityReservedForSales: '0',
+      quantityReservedForManufacturing: '2',
+      quantityReservedForTransfers: '0',
+      quantityReservedForBuilds: '1',
+      quantityPicked: '0',
+    };
+    const credit = directBuildReservationCredit(sharedPool, {
+      ownedManufacturingReservedQuantity: 1,
+      remainingManufacturingOrderLineQuantity: 1,
+      soleQualifyingManufacturingOrderLine: false,
+      finishedProductOpenDemandQuantity: 1,
+    });
+    expect(credit).toBe(0);
+    expect(effectiveBuildRunAvailableQuantity(sharedPool, {
+      allowBuildReserved: true,
+      ownedBuildReservedQuantity: credit,
+      ownedManufacturingReservedQuantity: 1,
+      requiredQuantity: 1,
+    })).toBe(-2);
+  });
+
+  it('refuses when the build reservation belongs to another finished product', () => {
+    expect(directBuildReservationCredit(liveFrontMudguard, {
+      ...fullyOwnedEvidence,
+      finishedProductOpenDemandQuantity: 0,
+    })).toBe(0);
+  });
+
+  it('refuses once any of the component stock has been picked', () => {
+    expect(directBuildReservationCredit({
+      ...liveFrontMudguard,
+      quantityReserved: '3',
+      quantityPicked: '1',
+    }, fullyOwnedEvidence)).toBe(0);
+  });
+
+  it('caps the credit at the unfulfilled remainder of the order line', () => {
+    expect(directBuildReservationCredit({
+      ...liveFrontMudguard,
+      quantityOnHand: '2',
+      quantityAvailable: '-2',
+      quantityReserved: '4',
+      quantityReservedForManufacturing: '2',
+      quantityReservedForBuilds: '2',
+    }, {
+      ownedManufacturingReservedQuantity: 2,
+      remainingManufacturingOrderLineQuantity: 1,
+      soleQualifyingManufacturingOrderLine: true,
+      finishedProductOpenDemandQuantity: 2,
+    })).toBe(1);
+  });
+
+  it('keeps the residual bound below a competing manufacturing reservation', () => {
+    expect(directBuildReservationCredit({
+      quantityOnHand: '3',
+      quantityAvailable: '-2',
+      rawQuantityAvailable: '1',
+      quantityReserved: '5',
+      quantityReservedForSales: '0',
+      quantityReservedForManufacturing: '3',
+      quantityReservedForTransfers: '0',
+      quantityReservedForBuilds: '2',
+      quantityPicked: '0',
+    }, {
+      ownedManufacturingReservedQuantity: 2,
+      remainingManufacturingOrderLineQuantity: 2,
+      soleQualifyingManufacturingOrderLine: true,
+      finishedProductOpenDemandQuantity: 5,
+    })).toBe(1);
+  });
+
+  it('refuses negative or non-finite evidence', () => {
+    expect(directBuildReservationCredit(liveFrontMudguard, {
+      ...fullyOwnedEvidence,
+      remainingManufacturingOrderLineQuantity: -1,
+    })).toBe(0);
+    expect(directBuildReservationCredit(liveFrontMudguard, {
+      ...fullyOwnedEvidence,
+      finishedProductOpenDemandQuantity: Number.NaN,
+    })).toBe(0);
+  });
+
+  it('derives ownership evidence from the live order and summary row', () => {
+    const evidence = directBuildOwnershipEvidence({
+      order: {
+        manufacturingOrderId: 'mo-1',
+        pickMatchings: [
+          { manufacturingOrderLineId: 'rear-line', matchedQuantity: '1' },
+          { manufacturingOrderLineId: 'other-line', matchedQuantity: '5' },
+        ],
+      },
+      componentLineIds: ['rear-line'],
+      componentQuantities: [2],
+      summaryRow: {
+        quantityReservedForManufacturing: '2',
+      },
+      finishedProductReservedForSales: 1,
+      finishedOutputQuantity: 1,
+    });
+    expect(evidence).toEqual({
+      ownedManufacturingReservedQuantity: 2,
+      remainingManufacturingOrderLineQuantity: 1,
+      soleQualifyingManufacturingOrderLine: true,
+      finishedProductOpenDemandQuantity: 2,
+    });
+  });
+
+  it('marks the order line as not sole when another order also reserves the component', () => {
+    const evidence = directBuildOwnershipEvidence({
+      order: { manufacturingOrderId: 'mo-1' },
+      componentLineIds: ['front-line'],
+      componentQuantities: [1],
+      summaryRow: { quantityReservedForManufacturing: '2' },
+      finishedProductReservedForSales: 1,
+      finishedOutputQuantity: 1,
+    });
+    expect(evidence.soleQualifyingManufacturingOrderLine).toBe(false);
   });
 });
