@@ -1,10 +1,8 @@
-import { chmod, mkdtemp } from 'node:fs/promises';
-import { tmpdir } from 'node:os';
-import { join } from 'node:path';
 import { describe, expect, it, vi } from 'vitest';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import type { InflowClient } from '../client/inflow.js';
 import type { InflowConfig } from '../config.js';
+import { createTempStateDir } from '../core/temp-state.fixtures.js';
 import type { ManufacturingOrder } from '../types/inflow.js';
 import { registerManufacturingOrderTraceTools } from './manufacturing-order-trace.js';
 
@@ -13,8 +11,7 @@ function payload(result: { content: Array<{ text: string }> }) {
 }
 
 async function harness() {
-  const stateDir = await mkdtemp(join(tmpdir(), 'inflow-mo-serial-tool-'));
-  await chmod(stateDir, 0o700);
+  const stateDir = await createTempStateDir('inflow-mo-serial-tool-');
   const order: ManufacturingOrder = {
     manufacturingOrderId: 'mo-1',
     manufacturingOrderNumber: 'MO-1',
@@ -30,9 +27,16 @@ async function harness() {
     pickMatchings: [],
     putLines: [],
   };
-  const prepareMutation = vi.fn();
+  let current: Record<string, any> = structuredClone(order);
+  const prepareMutation = vi.fn(async (_method: string, _path: string, options: { body: Record<string, any> }) => ({
+    correlationId: 'correlation-serials',
+    dispatch: async () => {
+      current = { ...current, ...options.body, timestamp: 'ts-2' };
+      return current;
+    },
+  }));
   const client = {
-    get: vi.fn(async () => structuredClone(order)),
+    get: vi.fn(async () => structuredClone(current)),
     prepareMutation,
   } as unknown as InflowClient;
   const config: InflowConfig = {
@@ -52,7 +56,7 @@ async function harness() {
 }
 
 describe('manufacturing-order serial reconciliation', () => {
-  it('binds an idempotency key but remains statically unsupported until its release canary passes', async () => {
+  it('binds an idempotency key and applies through a prepared PUT once gates are open', async () => {
     const fixture = await harness();
     const request = {
       manufacturingOrderId: 'mo-1',
@@ -62,7 +66,7 @@ describe('manufacturing-order serial reconciliation', () => {
     const preview = payload(await fixture.handler({ ...request, dryRun: true }));
     expect(preview.idempotencyKey).toMatch(/^[0-9a-f-]{36}$/);
 
-    await expect(fixture.handler({
+    await fixture.handler({
       ...request,
       dryRun: false,
       previewToken: preview.previewToken,
@@ -71,7 +75,9 @@ describe('manufacturing-order serial reconciliation', () => {
       expectedWriteShapeHash: preview.currentWriteShapeHash,
       expectedEntityTimestamp: preview.entityTimestamp,
       expectedDesiredHash: preview.desiredHash,
-    })).rejects.toThrow(/OPERATION_UNSUPPORTED/);
-    expect(fixture.prepareMutation).not.toHaveBeenCalled();
+    });
+    expect(fixture.prepareMutation).toHaveBeenCalledTimes(1);
+    expect(fixture.prepareMutation.mock.calls[0][0]).toBe('PUT');
+    expect(fixture.prepareMutation.mock.calls[0][1]).toBe('/manufacturing-orders');
   });
 });

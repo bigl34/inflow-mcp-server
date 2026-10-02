@@ -8,7 +8,6 @@ import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import type { InflowClient } from '../client/inflow.js';
 import type {
   StockAdjustment,
-  StockAdjustmentItem,
   StockAdjustmentFilter,
   StockTransfer,
   StockTransferItem,
@@ -25,6 +24,24 @@ const stockAdjustmentItemSchema = z.object({
   serialNumbers: z.array(z.string()).optional(),
   unitCost: z.number().optional(),
 });
+
+type StockAdjustmentItemInput = z.infer<typeof stockAdjustmentItemSchema>;
+
+function stockAdjustmentLine(item: StockAdjustmentItemInput) {
+  const quantityText = String(item.quantity);
+  return {
+    stockAdjustmentLineId: item.id ?? randomUUID(),
+    productId: item.productId,
+    ...(item.sublocation !== undefined ? { sublocation: item.sublocation } : {}),
+    ...(item.unitCost !== undefined ? { unitCost: item.unitCost } : {}),
+    quantity: {
+      standardQuantity: quantityText,
+      uomQuantity: quantityText,
+      uom: '',
+      serialNumbers: item.serialNumbers ?? [],
+    },
+  };
+}
 
 const stockTransferItemSchema = z.object({
   id: z.string().optional(),
@@ -131,12 +148,13 @@ export function registerInventoryTools(server: McpServer, client: InflowClient):
       // Generate a new UUID if not provided (for creates)
       const stockAdjustmentId = args.id || randomUUID();
 
-      const adjustment: StockAdjustment = {
+      const lines = args.items.map((item) => stockAdjustmentLine(item));
+      const adjustment = {
         stockAdjustmentId: stockAdjustmentId,
         date: args.adjustmentDate,
         locationId: args.locationId,
         adjustmentReasonId: args.reasonId,
-        items: args.items as StockAdjustmentItem[],
+        lines,
         remarks: args.remarks,
         customFields: args.customFields,
         timestamp: args.timestamp,

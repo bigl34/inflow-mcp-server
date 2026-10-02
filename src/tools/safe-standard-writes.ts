@@ -10,6 +10,7 @@ import { createMutationRuntime } from '../core/runtime.js';
 import { textResult } from '../core/results.js';
 import { normalizeDecimal } from '../core/decimal.js';
 import { assertSafeWriteAuthorized, getSafeWritePolicy } from '../core/write-policy.js';
+import { loadCustomFieldKinds, type CustomFieldKinds } from './custom-field-kinds.js';
 
 type JsonRow = Record<string, unknown>;
 interface StandardInput extends MutationControl {
@@ -44,65 +45,88 @@ interface Definition {
   requiredCreateFields: string[];
   include?: string[];
   plannedRows?: { field: string; idField: string };
+  customFieldEntity?: string;
+  decimalPaths?: string[];
+  adapterVersion: string;
+  providesTimestamp?: false;
   tags(id?: string): string[];
 }
 
+const QUANTITY_DECIMAL_PATHS = (field: string) => [`${field}[].quantity.standardQuantity`, `${field}[].quantity.uomQuantity`];
+const ORDER_LINE_DECIMAL_PATHS = ['lines[].unitPrice', 'lines[].subTotal', 'lines[].tax1Rate', 'lines[].tax2Rate', ...QUANTITY_DECIMAL_PATHS('lines')];
+
 const PRODUCT_DEFINITION: Definition = {
   tool: 'set_product', resourceType: 'product', idField: 'productId', wireIdField: 'productId', endpoint: '/products',
-  writableFields: ['name', 'description', 'barcode', 'sku', 'categoryId', 'isActive', 'cost', 'reorderPoint', 'reorderQuantity', 'weight', 'weightUnit', 'customFields'], requiredCreateFields: ['name'],
+  writableFields: ['name', 'description', 'sku', 'categoryId', 'isActive', 'weight', 'customFields'], requiredCreateFields: ['name'], customFieldEntity: 'product', decimalPaths: ['weight'],
+  adapterVersion: 'product/safe-v5',
   tags: (id) => [`product:${id ?? 'new'}`, `bom:${id ?? 'new'}`],
+};
+
+const LEGACY_PRODUCT_ADAPTER_VERSIONS = new Set(['product/safe-v2', 'product/safe-v3', 'product/safe-v4']);
+
+const LEGACY_PRODUCT_DEFINITION: Definition = {
+  ...PRODUCT_DEFINITION,
+  writableFields: ['name', 'description', 'barcode', 'sku', 'categoryId', 'isActive', 'cost', 'reorderPoint', 'reorderQuantity', 'weight', 'weightUnit', 'customFields'],
+};
+
+const PRODUCT_UNSUPPORTED_FIELDS: Record<string, string> = {
+  barcode: 'barcodes are productBarcodes[] rows rather than a product property (read them with include=productBarcodes); no bounded barcode writer exists yet',
+  cost: 'cost is the read-only ProductCost relation (read it with include=cost) that inFlow maintains from purchase-order receipts; a target unit cost is written through PUT /product-cost-adjustments (unitCost), which has no bounded MCP writer yet',
+  reorderPoint: 'reorder thresholds are per-location reorderSettings[] rows rather than a product property (read them with include=reorderSettings)',
+  reorderQuantity: 'reorder thresholds are per-location reorderSettings[] rows rather than a product property (read them with include=reorderSettings)',
+  weightUnit: 'the weight unit is a company-wide inFlow setting rather than a product property',
 };
 
 const DEFINITIONS: Definition[] = [
   PRODUCT_DEFINITION,
   {
     tool: 'set_sales_order', resourceType: 'sales-order', idField: 'salesOrderId', wireIdField: 'salesOrderId', endpoint: '/sales-orders',
-    writableFields: ['orderNumber', 'orderDate', 'requiredDate', 'customerId', 'locationId', 'billingAddress', 'shippingAddress', 'pricingSchemeId', 'taxingSchemeId', 'paymentTermsId', 'currencyCode', 'exchangeRate', 'lines', 'orderRemarks', 'customFields'], requiredCreateFields: ['customerId'], include: ['lines'],
+    writableFields: ['orderNumber', 'orderDate', 'dueDate', 'requestedShipDate', 'customerId', 'locationId', 'contactName', 'email', 'phone', 'poNumber', 'billingAddress', 'shippingAddress', 'sameBillingAndShipping', 'shipToCompanyName', 'pricingSchemeId', 'taxingSchemeId', 'paymentTermsId', 'currencyId', 'exchangeRate', 'isTaxInclusive', 'isQuote', 'isPrioritized', 'isCancelled', 'isCompleted', 'assignedToTeamMemberId', 'salesRepTeamMemberId', 'lines', 'orderRemarks', 'pickRemarks', 'packRemarks', 'shipRemarks', 'customFields'], requiredCreateFields: ['customerId'], include: ['lines'], plannedRows: { field: 'lines', idField: 'salesOrderLineId' }, customFieldEntity: 'salesOrder', decimalPaths: ['exchangeRate', ...ORDER_LINE_DECIMAL_PATHS], adapterVersion: 'sales-order/safe-v5',
     tags: (id) => [`sales-order:${id ?? 'new'}`, 'inventory:stock'],
   },
   {
     tool: 'set_purchase_order', resourceType: 'purchase-order', idField: 'purchaseOrderId', wireIdField: 'purchaseOrderId', endpoint: '/purchase-orders',
-    writableFields: ['orderNumber', 'orderDate', 'expectedDate', 'vendorId', 'locationId', 'shippingAddress', 'currencyCode', 'exchangeRate', 'lines', 'orderRemarks', 'customFields'], requiredCreateFields: ['vendorId'], include: ['lines'], plannedRows: { field: 'lines', idField: 'purchaseOrderLineId' },
+    writableFields: ['orderNumber', 'orderDate', 'dueDate', 'requestShipDate', 'vendorId', 'vendorOrderNumber', 'locationId', 'contactName', 'email', 'phone', 'carrier', 'vendorAddress', 'shipToAddress', 'shipToCompanyName', 'taxingSchemeId', 'paymentTermsId', 'currencyId', 'exchangeRate', 'isTaxInclusive', 'isQuote', 'isCancelled', 'isCompleted', 'assignedToTeamMemberId', 'lines', 'orderRemarks', 'receiveRemarks', 'customFields'], requiredCreateFields: ['vendorId'], include: ['lines'], plannedRows: { field: 'lines', idField: 'purchaseOrderLineId' }, customFieldEntity: 'purchaseOrder', decimalPaths: ['exchangeRate', ...ORDER_LINE_DECIMAL_PATHS, 'lines[].productHeight', 'lines[].productLength', 'lines[].productWeight', 'lines[].productWidth'], adapterVersion: 'purchase-order/safe-v5',
     tags: (id) => [`purchase-order:${id ?? 'new'}`, 'inventory:stock'],
   },
   {
     tool: 'set_customer', resourceType: 'customer', idField: 'customerId', wireIdField: 'customerId', endpoint: '/customers',
-    writableFields: ['name', 'email', 'phone', 'fax', 'website', 'billingAddress', 'shippingAddress', 'pricingSchemeId', 'paymentTermsId', 'taxingSchemeId', 'currencyCode', 'contacts', 'remarks', 'customFields', 'isActive'], requiredCreateFields: ['name'], include: ['contacts'],
+    writableFields: ['name', 'contactName', 'email', 'phone', 'fax', 'website', 'pricingSchemeId', 'taxingSchemeId', 'taxExemptNumber', 'discount', 'defaultPaymentTermsId', 'defaultPaymentMethod', 'defaultCarrier', 'defaultLocationId', 'defaultSalesRep', 'defaultSalesRepTeamMemberId', 'defaultBillingAddressId', 'defaultShippingAddressId', 'remarks', 'customFields', 'isActive'], requiredCreateFields: ['name'], customFieldEntity: 'customer', decimalPaths: ['discount'], adapterVersion: 'customer/safe-v5',
     tags: (id) => [`customer:${id ?? 'new'}`],
   },
   {
     tool: 'set_vendor', resourceType: 'vendor', idField: 'vendorId', wireIdField: 'vendorId', endpoint: '/vendors',
-    writableFields: ['name', 'email', 'phone', 'fax', 'website', 'address', 'paymentTermsId', 'currencyCode', 'contacts', 'customFields', 'isActive'], requiredCreateFields: ['name'], include: ['contacts'],
+    writableFields: ['name', 'contactName', 'email', 'phone', 'fax', 'website', 'currencyId', 'taxingSchemeId', 'isTaxInclusivePricing', 'leadTimeDays', 'discount', 'defaultPaymentTermsId', 'defaultPaymentMethod', 'defaultCarrier', 'defaultAddressId', 'remarks', 'customFields', 'isActive'], requiredCreateFields: ['name'], customFieldEntity: 'vendor', decimalPaths: ['discount'], adapterVersion: 'vendor/safe-v5',
     tags: (id) => [`vendor:${id ?? 'new'}`],
   },
   {
     tool: 'set_stock_adjustment', resourceType: 'stock-adjustment', idField: 'stockAdjustmentId', wireIdField: 'stockAdjustmentId', endpoint: '/stock-adjustments',
-    writableFields: ['date', 'locationId', 'adjustmentReasonId', 'items', 'remarks', 'customFields'], requiredCreateFields: ['locationId', 'items'], include: ['items'],
+    writableFields: ['date', 'locationId', 'adjustmentReasonId', 'lines', 'remarks', 'isCancelled', 'customFields'], requiredCreateFields: ['locationId', 'lines'], include: ['lines'], plannedRows: { field: 'lines', idField: 'stockAdjustmentLineId' }, customFieldEntity: 'stockAdjustment', decimalPaths: QUANTITY_DECIMAL_PATHS('lines'), adapterVersion: 'stock-adjustment/safe-v5',
     tags: (id) => [`stock-adjustment:${id ?? 'new'}`, 'inventory:stock'],
   },
   {
     tool: 'set_stock_transfer', resourceType: 'stock-transfer', idField: 'stockTransferId', wireIdField: 'stockTransferId', endpoint: '/stock-transfers',
-    writableFields: ['transferDate', 'fromLocationId', 'toLocationId', 'items', 'remarks', 'customFields'], requiredCreateFields: ['fromLocationId', 'toLocationId', 'items'], include: ['items'],
+    writableFields: ['transferNumber', 'transferDate', 'sentDate', 'receivedDate', 'fromLocationId', 'toLocationId', 'status', 'assignedToTeamMemberId', 'lines', 'remarks', 'isCancelled', 'customFields'], requiredCreateFields: ['fromLocationId', 'toLocationId', 'lines'], include: ['lines'], plannedRows: { field: 'lines', idField: 'stockTransferLineId' }, customFieldEntity: 'stockTransfer', decimalPaths: QUANTITY_DECIMAL_PATHS('lines'), adapterVersion: 'stock-transfer/safe-v5',
     tags: (id) => [`stock-transfer:${id ?? 'new'}`, 'inventory:stock'],
   },
   {
     tool: 'set_stock_count', resourceType: 'stock-count', idField: 'stockCountId', wireIdField: 'stockCountId', endpoint: '/stock-counts',
-    writableFields: ['countDate', 'locationId', 'remarks'], requiredCreateFields: ['locationId'],
+    writableFields: ['stockCountNumber', 'locationId', 'assignedToTeamMemberId', 'startedDate', 'completedDate', 'isStarted', 'isPrepared', 'isReviewed', 'isCompleted', 'isCancelled', 'remarks'], requiredCreateFields: ['locationId'], adapterVersion: 'stock-count/safe-v2',
     tags: (id) => [`stock-count:${id ?? 'new'}`, 'inventory:stock'],
   },
   {
     tool: 'set_manufacturing_order', resourceType: 'manufacturing-order', idField: 'manufacturingOrderId', wireIdField: 'manufacturingOrderId', endpoint: '/manufacturing-orders',
-    writableFields: ['manufacturingOrderNumber', 'orderDate', 'dueDate', 'locationId', 'primaryFinishedProductId', 'lines', 'pickLines', 'pickMatchings', 'remarks', 'pickRemarks', 'putAwayRemarks', 'isCancelled', 'isCompleted', 'customFields'], requiredCreateFields: ['primaryFinishedProductId', 'lines'], include: ['lines', 'pickLines', 'pickMatchings'],
+    writableFields: ['manufacturingOrderNumber', 'orderDate', 'dueDate', 'locationId', 'primaryFinishedProductId', 'assignedToTeamMemberId', 'isPrioritized', 'lines', 'pickLines', 'pickMatchings', 'putLines', 'remarks', 'pickRemarks', 'putAwayRemarks', 'isCancelled', 'isCompleted', 'customFields'], requiredCreateFields: ['primaryFinishedProductId', 'lines'], include: ['lines', 'pickLines', 'pickMatchings', 'putLines'], customFieldEntity: 'manufacturingOrder', decimalPaths: [...QUANTITY_DECIMAL_PATHS('lines'), ...QUANTITY_DECIMAL_PATHS('pickLines'), ...QUANTITY_DECIMAL_PATHS('putLines'), 'pickMatchings[].matchedQuantity', 'lines[].manufacturingOrderOperations[].cost', 'lines[].manufacturingOrderOperations[].estimatedPerHourCost', 'lines[].manufacturingOrderOperations[].estimatedSeconds'], adapterVersion: 'manufacturing-order/safe-v5',
     tags: (id) => [`mo:${id ?? 'new'}`, 'inventory:stock'],
   },
   {
-    tool: 'set_taxing_scheme', resourceType: 'taxing-scheme', idField: 'taxingSchemeId', wireIdField: 'id', endpoint: '/taxing-schemes',
-    writableFields: ['name', 'isDefault'], requiredCreateFields: ['name'],
+    tool: 'set_taxing_scheme', resourceType: 'taxing-scheme', idField: 'taxingSchemeId', wireIdField: 'taxingSchemeId', endpoint: '/taxing-schemes',
+    writableFields: ['name', 'isDefault', 'isActive', 'calculateTax2OnTax1', 'defaultTaxCodeId', 'tax1Name', 'tax2Name', 'tax1OnShipping', 'tax2OnShipping'], requiredCreateFields: ['name'], adapterVersion: 'taxing-scheme/safe-v2',
     tags: (id) => [`taxing-scheme:${id ?? 'new'}`],
   },
   {
-    tool: 'set_webhook', resourceType: 'webhook', idField: 'webhookId', wireIdField: 'id', endpoint: '/webhooks',
-    writableFields: ['url', 'events', 'isActive'], requiredCreateFields: ['url', 'events'],
+    tool: 'set_webhook', resourceType: 'webhook', idField: 'webhookId', wireIdField: 'webHookSubscriptionId', endpoint: '/webhooks',
+    writableFields: ['url', 'events'], requiredCreateFields: ['url', 'events'], providesTimestamp: false, adapterVersion: 'webhook/safe-v2',
     tags: (id) => [`webhook:${id ?? 'new'}`],
   },
 ];
@@ -134,14 +158,14 @@ function isJsonRow(value: unknown): value is JsonRow {
   return value !== null && typeof value === 'object' && !Array.isArray(value);
 }
 
-function mergeProductPatchValues(
+function mergePatchCustomFields(
   input: StandardInput,
   current: JsonRow | undefined,
   values: JsonRow,
   definition: Definition
 ): JsonRow {
   if (
-    definition.tool !== 'set_product' ||
+    !definition.writableFields.includes('customFields') ||
     input.mode !== 'patch' ||
     !Object.prototype.hasOwnProperty.call(values, 'customFields')
   ) {
@@ -198,6 +222,46 @@ function standardDispatchBody(
   return compact(body) as JsonRow;
 }
 
+const CHECKBOX_TEXT = /^(?:true|false)$/i;
+const ISO_DATE_ONLY = /^(\d{4})-(\d{2})-(\d{2})(?:T00:00:00(?:\.0+)?(?:Z|\+00:00)?)?$/;
+const PROVIDER_DATE_ONLY = /^(\d{2})\/(\d{2})\/(\d{4}) 00:00:00$/;
+
+function calendarDate(year: string, month: string, day: string): string | undefined {
+  const parsed = new Date(Date.UTC(Number(year), Number(month) - 1, Number(day)));
+  const roundTrips = parsed.getUTCFullYear() === Number(year) &&
+    parsed.getUTCMonth() === Number(month) - 1 &&
+    parsed.getUTCDate() === Number(day);
+  return roundTrips ? `${year}-${month}-${day}` : undefined;
+}
+
+function canonicalCheckbox(value: unknown): unknown {
+  if (typeof value === 'string' && CHECKBOX_TEXT.test(value)) return value.toLowerCase() === 'true';
+  return compact(value);
+}
+
+function canonicalDate(value: unknown): unknown {
+  if (typeof value !== 'string') return compact(value);
+  const isoDate = ISO_DATE_ONLY.exec(value);
+  if (isoDate) return calendarDate(isoDate[1], isoDate[2], isoDate[3]) ?? value;
+  const providerDate = PROVIDER_DATE_ONLY.exec(value);
+  if (providerDate) return calendarDate(providerDate[3], providerDate[1], providerDate[2]) ?? value;
+  return value;
+}
+
+function canonicalCustomFieldValue(kind: string | undefined, value: unknown): unknown {
+  if (kind === 'checkbox') return canonicalCheckbox(value);
+  if (kind === 'date') return canonicalDate(value);
+  return compact(value);
+}
+
+function canonicalCustomFields(value: JsonRow, kinds: CustomFieldKinds): JsonRow {
+  if (!isJsonRow(value.customFields)) return value;
+  const customFields = Object.fromEntries(
+    Object.entries(value.customFields).map(([key, child]) => [key, canonicalCustomFieldValue(kinds[key], child)])
+  );
+  return { ...value, customFields };
+}
+
 function projected(value: JsonRow, definition: Definition, nullMissing = true): JsonRow {
   return Object.fromEntries([
     [definition.wireIdField, value[definition.wireIdField] ?? null],
@@ -205,14 +269,60 @@ function projected(value: JsonRow, definition: Definition, nullMissing = true): 
   ].filter(([, child]) => nullMissing || child !== null));
 }
 
-function semantic(value: JsonRow, definition?: Definition) {
-  if (definition) return compact(projected(value, definition));
+function canonicalDecimalAt(value: unknown, segments: string[]): unknown {
+  if (segments.length === 0) return canonicalScalar(value);
+  const [segment, ...rest] = segments;
+  if (segment.endsWith('[]')) {
+    const field = segment.slice(0, -2);
+    if (!isJsonRow(value) || !Array.isArray(value[field])) return value;
+    const rows = value[field].map((row) => canonicalDecimalAt(row, rest));
+    return { ...value, [field]: rows };
+  }
+  if (!isJsonRow(value) || !Object.prototype.hasOwnProperty.call(value, segment)) return value;
+  return { ...value, [segment]: canonicalDecimalAt(value[segment], rest) };
+}
+
+function canonicalDecimalPaths(value: JsonRow, definition: Definition): JsonRow {
+  const decimalPaths = definition.decimalPaths ?? [];
+  return decimalPaths.reduce<JsonRow>((current, path) => canonicalDecimalAt(current, path.split('.')) as JsonRow, value);
+}
+
+function semantic(value: JsonRow, definition?: Definition, kinds: CustomFieldKinds = {}) {
+  if (definition) return withoutProviderMetadata(canonicalDecimalPaths(canonicalCustomFields(projected(value, definition), kinds), definition));
   const omit = new Set(['timestamp', 'createdDate', 'modifiedDate']);
   return Object.fromEntries(Object.entries(value).filter(([key, child]) => !omit.has(key) && child !== undefined).map(([key, child]) => [key, compact(child)]));
 }
 
-export function productWriteSemantic(value: Record<string, unknown>): unknown {
-  return semantic(value, PRODUCT_DEFINITION);
+export function productWriteSemantic(
+  value: Record<string, unknown>,
+  kinds: CustomFieldKinds = {},
+  adapterVersion: string = PRODUCT_DEFINITION.adapterVersion
+): unknown {
+  const definition = LEGACY_PRODUCT_ADAPTER_VERSIONS.has(adapterVersion) ? LEGACY_PRODUCT_DEFINITION : PRODUCT_DEFINITION;
+  return semantic(value, definition, kinds);
+}
+
+const DECIMAL_TEXT = /^-?\d+(?:\.\d+)?$/;
+
+function canonicalScalar(value: unknown): unknown {
+  if (typeof value === 'string' && DECIMAL_TEXT.test(value)) return normalizeDecimal(value);
+  return compact(value);
+}
+
+function requestedShape(actual: unknown, requested: unknown): unknown {
+  if (Array.isArray(requested)) {
+    if (!Array.isArray(actual)) return canonicalScalar(actual);
+    return requested.map((row, index) => requestedShape(actual[index], row));
+  }
+  if (isJsonRow(requested)) {
+    if (!isJsonRow(actual)) return canonicalScalar(actual);
+    return Object.fromEntries(
+      Object.keys(requested)
+        .map((key) => [key, requestedShape(actual[key], requested[key])] as const)
+        .filter(([, child]) => child !== undefined)
+    );
+  }
+  return canonicalScalar(actual);
 }
 
 function withoutProviderMetadata(value: unknown): unknown {
@@ -251,6 +361,11 @@ function validateValues(input: StandardInput, current: JsonRow | undefined, desi
     }
     if (Object.prototype.hasOwnProperty.call(input.values, 'customFields') && !isJsonRow(input.values.customFields)) {
       throw new Error('INVALID_CUSTOM_FIELDS: customFields must be an object');
+    }
+    const unsupported = Object.keys(input.values).filter((key) => Object.prototype.hasOwnProperty.call(PRODUCT_UNSUPPORTED_FIELDS, key)).sort();
+    if (unsupported.length) {
+      const reasons = unsupported.map((key) => `${key}: ${PRODUCT_UNSUPPORTED_FIELDS[key]}`).join('; ');
+      throw new Error(`OPERATION_UNSUPPORTED: the product PUT ignores these fields, so generic product writes reject them: ${unsupported.join(',')} (${reasons})`);
     }
   }
   const allowed = new Set(definition.writableFields);
@@ -443,14 +558,13 @@ export function registerSafeStandardWriteTools(server: McpServer, client: Inflow
       const input = raw as StandardInput;
       const suppliedId = input[definition.idField] as string | undefined;
       let resolvedId = suppliedId;
+      const kinds = definition.customFieldEntity ? await loadCustomFieldKinds(client, definition.customFieldEntity) : {};
       const adapter: MutationAdapter<StandardInput, JsonRow, JsonRow, JsonRow> = {
         operation: definition.tool,
         resourceType: definition.resourceType,
         resourceId: () => resolvedId,
         mode: (args) => args.mode,
-        adapterVersion: definition.tool === 'set_product'
-          ? 'product/safe-v3'
-          : `${definition.resourceType}/safe-v2`,
+        adapterVersion: definition.adapterVersion,
         isCreate: (_args, current) => current === undefined,
         read: async () => resolvedId
           ? getOptional(client, `${definition.endpoint}/${resolvedId}`, definition.include)
@@ -471,12 +585,12 @@ export function registerSafeStandardWriteTools(server: McpServer, client: Inflow
           resolvedId = id;
           const base = args.mode === 'patch' ? projected(current ?? {}, definition, false) : {};
           const plannedValues = applyPlannedRowIds(args.values, definition, planned);
-          const values = mergeProductPatchValues(args, current, plannedValues, definition);
+          const values = mergePatchCustomFields(args, current, plannedValues, definition);
           const desired = { ...base, ...values, [definition.wireIdField]: id };
           if (current?.timestamp) desired.timestamp = current.timestamp;
           return desired;
         },
-        semantic: (value) => semantic(value, definition),
+        semantic: (value) => semantic(value, definition, kinds),
         inputHash: (args, current) => definition.tool === 'set_product' && current === undefined
           ? canonicalHash(compact(args.values), 'input/product-create/v1')
           : undefined,
@@ -490,7 +604,7 @@ export function registerSafeStandardWriteTools(server: McpServer, client: Inflow
         validate: (args, current, desired) => validateValues(args, current, desired, definition),
         verifyReadback: (args, current, desired, actual) => {
           if (actual === undefined) return false;
-          if (definition.tool === 'set_product' && current === undefined) {
+          if (current === undefined) {
             const fields = [definition.wireIdField, ...Object.keys(compact(args.values) as JsonRow)];
             const requested = (value: JsonRow) => {
               const selected = Object.fromEntries(fields.map((field) => [field, value[field]]));
@@ -500,11 +614,11 @@ export function registerSafeStandardWriteTools(server: McpServer, client: Inflow
                   Object.keys(compact(args.values.customFields) as JsonRow).map((field) => [field, actualFields[field]])
                 );
               }
-              return compact(selected);
+              return requestedShape(withoutProviderMetadata(canonicalCustomFields(selected, kinds)), { [definition.wireIdField]: null, ...args.values });
             };
             return stableStringify(requested(actual)) === stableStringify(requested(desired));
           }
-          return stableStringify(semantic(actual, definition)) === stableStringify(semantic(desired, definition));
+          return stableStringify(semantic(actual, definition, kinds)) === stableStringify(semantic(desired, definition, kinds));
         },
         prepareDispatch: async (args, current, desired) => {
           const body = standardDispatchBody(args, current, desired, definition);
@@ -523,7 +637,7 @@ export function registerSafeStandardWriteTools(server: McpServer, client: Inflow
           : policy.idempotency === 'create-only'
             ? (_args, current) => current === undefined
             : false,
-        requireTimestamp: suppliedId !== undefined,
+        requireTimestamp: suppliedId !== undefined && definition.providesTimestamp !== false,
       };
       return textResult(await executeMutation(createMutationRuntime(config), adapter, input));
     });

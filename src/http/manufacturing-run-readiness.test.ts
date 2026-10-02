@@ -48,6 +48,28 @@ describe('manufacturing run readiness', () => {
     expect(rateStatus).toHaveBeenCalledOnce();
   });
 
+  it('reports a not-required attestation as valid on the wire', async () => {
+    const result = await evaluate({
+      now: () => new Date('2026-07-24T10:00:00.000Z'),
+      host: () => ({ healthy: true }),
+      clock: () => ({ skewMs: 0 }),
+      gate: () => ({
+        enabled: true,
+        reasonCode: undefined,
+        attestationState: 'not-required',
+      }),
+      storage: () => ({
+        writeGateOpen: true,
+        journalMode: 'wal',
+        synchronous: 2,
+        foreignKeys: 1,
+      }),
+      rate: () => ({ allowed: true, remaining: 12, retryAfterMs: 0 }),
+    }) as { ready: boolean; checks: { attestation: unknown } };
+    expect(result.ready).toBe(true);
+    expect(result.checks.attestation).toEqual({ ok: true, state: 'valid' });
+  });
+
   it('fails closed with sanitized reason codes for unhealthy dependencies', async () => {
     await expect(evaluate({
       now: () => new Date('2026-07-24T10:00:00.000Z'),

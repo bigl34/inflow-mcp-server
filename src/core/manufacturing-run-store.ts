@@ -129,7 +129,7 @@ const ALLOWED_TRANSITIONS: Record<ManufacturingRunState, ReadonlySet<Manufacturi
   ]),
   resolved_manual: new Set(),
   failed_no_write: new Set(),
-  conflict: new Set(),
+  conflict: new Set(['collecting']),
   blocked: new Set([
     'collecting',
     'resolved_manual',
@@ -2436,7 +2436,7 @@ export class ManufacturingRunStore {
     toState: ManufacturingRunState | string;
     reason: string;
     at?: string | Date | number;
-  }, allowAttestedNoWrite: boolean, allowOperationCompletionPreparation: boolean, allowProvenNoWriteRearm: boolean): ManufacturingRunRecord {
+  }, allowAttestedNoWrite: boolean, allowOperationCompletionPreparation: boolean, allowProvenNoWriteRearm: boolean, allowNoDispatchConflictRearm = false): ManufacturingRunRecord {
     const database = this.requireDatabase();
     if (!RUN_STATE_SET.has(input.toState)) {
       throw new Error(`UNSUPPORTED_RUN_STATE: ${input.toState}`);
@@ -2459,7 +2459,11 @@ export class ManufacturingRunStore {
           `RUN_TRANSITION_TIME_CONFLICT: transition precedes revision ${current.stateRevision}`
         );
       }
-      if (TERMINAL_STATES.has(current.state)) {
+      const noDispatchConflictRearm =
+        allowNoDispatchConflictRearm &&
+        current.state === 'conflict' &&
+        toState === 'collecting';
+      if (TERMINAL_STATES.has(current.state) && !noDispatchConflictRearm) {
         throw new Error(`TERMINAL_RUN_IMMUTABLE: ${current.operationId}`);
       }
       if (toState === 'failed_no_write' && !allowAttestedNoWrite) {
@@ -2625,6 +2629,45 @@ export class ManufacturingRunStore {
       true,
       false
     );
+  }
+
+  rearmNoDispatchConflict(input: {
+    operationId: string;
+    expectedRevision: number;
+    artifact: Omit<ManufacturingRunArtifactInput, 'operationId'>;
+    reason: string;
+    at?: string | Date | number;
+  }): ManufacturingRunRecord {
+    const database = this.requireDatabase();
+    const transaction = database.transaction(() => {
+      const current = this.requireRun(input.operationId);
+      if (current.state !== 'conflict') {
+        throw new Error(`NO_DISPATCH_CONFLICT_REARM_REQUIRES_CONFLICT: ${current.state}`);
+      }
+      if (this.getRunArtifact(input.operationId, 'dispatch_plan')) {
+        throw new Error('NO_DISPATCH_CONFLICT_REARM_DISPATCH_PLANNED');
+      }
+      if (
+        this.getRunArtifact(
+          input.operationId,
+          'operation_completion_dispatch_barrier/v1'
+        )
+      ) {
+        throw new Error('NO_DISPATCH_CONFLICT_REARM_UNSUPPORTED_DOMAIN');
+      }
+      this.bindRunArtifact({
+        operationId: input.operationId,
+        ...input.artifact,
+      });
+      return this.transitionRunInternal({
+        operationId: input.operationId,
+        expectedRevision: input.expectedRevision,
+        toState: 'collecting',
+        reason: requireText(input.reason, 'transition_reason'),
+        at: input.at,
+      }, false, false, false, true);
+    });
+    return transaction.immediate();
   }
 
   rearmDispatchAfterProvenNoWrite(input: {
@@ -2839,7 +2882,13 @@ export class ManufacturingRunStore {
     }, true, false, false);
   }
 
-  listTransitions(operationId: string): Array<Record<string, unknown>> {
+  listTransitions(operationId: string): Array<{
+    fromState: string | null;
+    toState: string;
+    stateRevision: number;
+    reason: string;
+    at: string | null;
+  }> {
     return (this.requireDatabase().prepare(`
       SELECT * FROM run_transitions
       WHERE operation_id = ?

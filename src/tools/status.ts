@@ -22,6 +22,7 @@ import { SERVER_NAME, SERVER_VERSION } from '../version.js';
 import { fetchProductPrices, priceSemantic } from '../services/product-prices.js';
 import { canonicalizeManufacturingConfig, fetchManufacturingProduct, normalizeManufacturingProduct } from './product-manufacturing.js';
 import { productWriteSemantic } from './safe-standard-writes.js';
+import { loadCustomFieldKinds } from './custom-field-kinds.js';
 
 const DEPRECATED_GATE_DOMAINS = [
   'prices',
@@ -43,6 +44,8 @@ const DEPRECATED_IMMEDIATE_TOOLS = [
   'upsert_stock_count', 'upsert_manufacturing_order', 'upsert_taxing_scheme',
   'upsert_webhook', 'delete_webhook',
 ];
+
+const READBACK_FAILURE_CODES = new Set(['VERIFICATION_MISMATCH', 'VERIFICATION_MISSING']);
 
 export async function reconcileMutation(
   client: InflowClient,
@@ -70,8 +73,9 @@ export async function reconcileMutation(
         semanticDomain
       );
     } else if (record.resourceType === 'product') {
+      const kinds = await loadCustomFieldKinds(client, 'product');
       currentSemanticHash = canonicalHash(
-        productWriteSemantic(await client.get<Record<string, unknown>>(`/products/${record.resourceId}`)),
+        productWriteSemantic(await client.get<Record<string, unknown>>(`/products/${record.resourceId}`), kinds, record.adapterVersion),
         semanticDomain
       );
     } else {
@@ -103,9 +107,13 @@ export async function reconcileMutation(
     ...current,
     state: 'applied_verified',
     updatedAt: new Date().toISOString(),
-    steps: current.steps.map((step) => step.state === 'dispatched' || step.state === 'unknown'
-      ? { ...step, state: 'verified', updatedAt: new Date().toISOString() }
-      : step),
+    steps: current.steps.map((step) => {
+      const unresolved = step.state === 'dispatched' || step.state === 'unknown';
+      const readbackFailure = step.state === 'failed' && READBACK_FAILURE_CODES.has(step.errorCode ?? '');
+      if (!unresolved && !readbackFailure) return step;
+      const { errorCode: _errorCode, ...verifiedStep } = step;
+      return { ...verifiedStep, state: 'verified' as const, updatedAt: new Date().toISOString() };
+    }),
   }));
   return {
     record: updated,
@@ -158,8 +166,6 @@ export function registerStatusTools(server: McpServer, client: InflowClient, con
   server.tool('get_mcp_status', 'Inspect local inFlow MCP capabilities, safety gates, and optional API reachability.', {
     probeApi: z.boolean().default(false),
   }, async ({ probeApi }) => {
-    // The manufacturing coordinator keeps its dedicated attestation. Ordinary
-    // adapters use release canaries as build evidence, not runtime authority.
     const [coordinatorGate, operationCompletionGate] = await Promise.all([
       resolveCoordinatorWriteGate(config),
       resolveManufacturingOperationCompletionGate(config),
@@ -182,12 +188,7 @@ export function registerStatusTools(server: McpServer, client: InflowClient, con
       classification: 'coordinator',
       staticSupport: true,
       idempotency: 'required',
-      requiredGates: [
-        'INFLOW_ENABLE_SAFE_WRITES',
-        'INFLOW_ENABLE_STOCK_WRITES',
-        'INFLOW_ENABLE_MANUFACTURING_PICK_BATCH_WRITES',
-        'manufacturing-pick-batch-v1 attestation',
-      ],
+      requiredGates: coordinatorGate.requiredGates,
       effectiveApplyEnabled: coordinatorGate.enabled,
       reasonCode: coordinatorGate.reasonCode,
     };

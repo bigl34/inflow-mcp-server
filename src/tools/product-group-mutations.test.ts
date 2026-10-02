@@ -1,16 +1,13 @@
-import { chmod, mkdtemp } from 'node:fs/promises';
-import { tmpdir } from 'node:os';
-import { join } from 'node:path';
 import { describe, expect, it, vi } from 'vitest';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { InflowApiError, type InflowClient } from '../client/inflow.js';
 import type { InflowConfig } from '../config.js';
+import { createTempStateDir } from '../core/temp-state.fixtures.js';
 import type { Product, ProductGroup } from '../types/inflow.js';
 import { registerProductGroupMutationTools } from './product-group-mutations.js';
 
 async function fixture() {
-  const stateDir = await mkdtemp(join(tmpdir(), 'inflow-group-write-'));
-  await chmod(stateDir, 0o700);
+  const stateDir = await createTempStateDir('inflow-group-write-');
   const handlers: Record<string, (args: any) => Promise<any>> = {};
   const server = { tool(name: string, _description: string, _schema: unknown, handler: (args: any) => Promise<any>) {
     handlers[name] = handler;

@@ -4,3 +4,7 @@
 49b19c4d59e161750dce77d0fa0fe3d28cb7cba9:3f/ab753e9542/0/full.jsonl:generic-api-key:255
 49b19c4d59e161750dce77d0fa0fe3d28cb7cba9:3f/ab753e9542/0/full.jsonl:generic-api-key:345
 49b19c4d59e161750dce77d0fa0fe3d28cb7cba9:3f/ab753e9542/0/full.jsonl:generic-api-key:346
+
+# safe-standard-writes vendor-discount test idempotency keys (fixture strings, not credentials)
+src/tools/safe-standard-writes.test.ts:generic-api-key:1545
+src/tools/safe-standard-writes.test.ts:generic-api-key:1550

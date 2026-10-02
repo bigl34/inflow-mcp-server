@@ -1,8 +1,9 @@
-import { chmod, mkdtemp, rm, stat, writeFile } from 'node:fs/promises';
+import { chmod, rm, stat, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { canonicalHash } from './canonical-json.js';
+import { createTempStateDir, trackTempPath } from './temp-state.fixtures.js';
 
 const storeModule = await import('./manufacturing-run-store.js').catch(() => ({}));
 const MODE_ENFORCING_TEMP_ROOT =
@@ -15,10 +16,17 @@ function Store(): new (options: Record<string, unknown>) => any {
 }
 
 async function statePath(prefix = 'inflow-manufacturing-store-'): Promise<string> {
-  const directory = await mkdtemp(join(MODE_ENFORCING_TEMP_ROOT, prefix));
-  await chmod(directory, 0o700);
+  const directory = await createTempStateDir(prefix, MODE_ENFORCING_TEMP_ROOT);
   expect((await stat(directory)).mode & 0o077).toBe(0);
   return join(directory, 'manufacturing-runs.sqlite');
+}
+
+function trackBackupFiles(backupPath: string): void {
+  const walPath = `${backupPath}-wal`;
+  const shmPath = `${backupPath}-shm`;
+  trackTempPath(backupPath);
+  trackTempPath(walPath);
+  trackTempPath(shmPath);
 }
 
 function runInput(
@@ -787,6 +795,76 @@ describe('state transitions, FIFO ownership, leases, and dispatch fencing', () =
         reason: 'illegal retry',
       })
     ).toThrow(/TERMINAL_RUN_IMMUTABLE/);
+    expect(() =>
+      store.transitionRun({
+        operationId: 'operation-states',
+        expectedRevision: failed.stateRevision,
+        toState: 'collecting',
+        reason: 'unguarded conflict re-arm',
+      })
+    ).toThrow(/TERMINAL_RUN_IMMUTABLE/);
+    expect(() =>
+      store.resolveRunManualWithArtifact({
+        operationId: 'operation-states',
+        expectedRevision: failed.stateRevision,
+        artifact: {
+          artifactType: 'manual_resolution_approval:0',
+          artifactHash: 'f'.repeat(64),
+          artifact: { operatorId: 'operator-a' },
+        },
+        reason: 'operator resolved',
+      })
+    ).toThrow(/RUN_NOT_MANUALLY_RESOLVABLE/);
+    const rearmed = store.rearmNoDispatchConflict({
+      operationId: 'operation-states',
+      expectedRevision: failed.stateRevision,
+      artifact: {
+        artifactType: 'no_dispatch_conflict_rearm/v1:revision:0',
+        artifactHash: 'e'.repeat(64),
+        artifact: { priorState: 'conflict' },
+      },
+      reason: 'operator re-arm after no-dispatch conflict',
+    });
+    expect(rearmed.state).toBe('collecting');
+    store.close();
+  });
+
+  it('refuses a no-dispatch conflict re-arm once a dispatch plan exists', async () => {
+    const databasePath = await statePath();
+    const store = new (Store())({ databasePath, minimumFreeBytes: 0 });
+    store.initialize();
+    store.createRun(runInput('planned-conflict'));
+    const collecting = store.transitionRun({
+      operationId: 'operation-planned-conflict',
+      expectedRevision: 0,
+      toState: 'collecting',
+      reason: 'expanded',
+    });
+    const conflicted = store.transitionRun({
+      operationId: 'operation-planned-conflict',
+      expectedRevision: collecting.stateRevision,
+      toState: 'conflict',
+      reason: 'pre-dispatch readback drift: INVENTORY_LOCATION_DRIFT',
+    });
+    store.bindRunArtifact({
+      operationId: 'operation-planned-conflict',
+      artifactType: 'dispatch_plan',
+      artifactHash: 'a'.repeat(64),
+      artifact: { mode: 'complete' },
+    });
+    expect(() =>
+      store.rearmNoDispatchConflict({
+        operationId: 'operation-planned-conflict',
+        expectedRevision: conflicted.stateRevision,
+        artifact: {
+          artifactType: 'no_dispatch_conflict_rearm/v1:revision:1',
+          artifactHash: 'b'.repeat(64),
+          artifact: { priorState: 'conflict' },
+        },
+        reason: 'operator re-arm after no-dispatch conflict',
+      })
+    ).toThrow(/NO_DISPATCH_CONFLICT_REARM_DISPATCH_PLANNED/);
+    expect(store.getRun('operation-planned-conflict').state).toBe('conflict');
     store.close();
   });
 
@@ -2359,6 +2437,7 @@ describe('rate, nonce, event retention, outbox, backup, and restore', () => {
       MODE_ENFORCING_TEMP_ROOT,
       `inflow-manufacturing-backup-${crypto.randomUUID()}.sqlite`
     );
+    trackBackupFiles(backupPath);
     const store = new (Store())({ databasePath, minimumFreeBytes: 0 });
     store.initialize();
     store.createRun(runInput('restore-active'));
@@ -2430,6 +2509,7 @@ describe('rate, nonce, event retention, outbox, backup, and restore', () => {
       MODE_ENFORCING_TEMP_ROOT,
       `inflow-manufacturing-v1-backup-${crypto.randomUUID()}.sqlite`
     );
+    trackBackupFiles(backupPath);
     const store = new (Store())({ databasePath, minimumFreeBytes: 0 });
     store.initialize();
     store.createRun(runInput('legacy-backup'));
@@ -2480,6 +2560,7 @@ describe('rate, nonce, event retention, outbox, backup, and restore', () => {
       MODE_ENFORCING_TEMP_ROOT,
       `inflow-manufacturing-crash-backup-${crypto.randomUUID()}.sqlite`
     );
+    trackBackupFiles(backupPath);
     const BetterSqlite3 = (await import('better-sqlite3')).default;
     let observedAtCrash: Record<string, unknown> | undefined;
     const store = new (Store())({

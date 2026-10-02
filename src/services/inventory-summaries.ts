@@ -1,6 +1,11 @@
 import type { InflowClient } from '../client/inflow.js';
 import { normalizeDecimal } from '../core/decimal.js';
-import type { InventoryLine, Product, ProductSummary } from '../types/inflow.js';
+import type {
+  InventoryLine,
+  ManufacturingOrder,
+  Product,
+  ProductSummary,
+} from '../types/inflow.js';
 
 type JsonApiSummary = { id?: string; attributes?: Partial<ProductSummary> };
 type QuantityLike = string | number | null | undefined;
@@ -81,6 +86,100 @@ function canonicalAvailabilityDimensions(row: AvailabilityRow): {
   };
 }
 
+export interface DirectBuildOwnershipEvidence {
+  ownedManufacturingReservedQuantity: number;
+  remainingManufacturingOrderLineQuantity: number;
+  soleQualifyingManufacturingOrderLine: boolean;
+  finishedProductOpenDemandQuantity: number;
+}
+
+export function directBuildOwnershipEvidence(input: {
+  order: ManufacturingOrder;
+  componentLineIds: readonly string[];
+  componentQuantities: readonly number[];
+  summaryRow: AvailabilityRow | undefined;
+  finishedProductReservedForSales: number;
+  finishedOutputQuantity: number;
+}): DirectBuildOwnershipEvidence {
+  const ownedManufacturingReservedQuantity = input.componentQuantities.reduce(
+    (sum, quantity) => sum + quantity,
+    0
+  );
+  const ownedLineIds = new Set(input.componentLineIds);
+  const matchedQuantity = (input.order.pickMatchings ?? []).reduce(
+    (sum, matching) => {
+      const lineId = matching.manufacturingOrderLineId?.trim() ?? '';
+      if (!ownedLineIds.has(lineId)) return sum;
+      return sum + quantityNumber(matching.matchedQuantity);
+    },
+    0
+  );
+  const remainingManufacturingOrderLineQuantity =
+    ownedManufacturingReservedQuantity - matchedQuantity;
+  const totalManufacturingReserved = quantityNumber(
+    input.summaryRow?.quantityReservedForManufacturing
+  );
+  const soleQualifyingManufacturingOrderLine =
+    Number.isFinite(totalManufacturingReserved) &&
+    ownedManufacturingReservedQuantity === totalManufacturingReserved;
+  const componentUnitsPerFinishedUnit =
+    input.finishedOutputQuantity > 0
+      ? ownedManufacturingReservedQuantity / input.finishedOutputQuantity
+      : Number.NaN;
+  const finishedProductOpenDemandQuantity =
+    input.finishedProductReservedForSales * componentUnitsPerFinishedUnit;
+  return {
+    ownedManufacturingReservedQuantity,
+    remainingManufacturingOrderLineQuantity,
+    soleQualifyingManufacturingOrderLine,
+    finishedProductOpenDemandQuantity,
+  };
+}
+
+export function directBuildReservationCredit(
+  row: AvailabilityRow | undefined,
+  evidence: DirectBuildOwnershipEvidence
+): number {
+  const buildReserved = quantityNumber(row?.quantityReservedForBuilds);
+  const totalManufacturingReserved = quantityNumber(
+    row?.quantityReservedForManufacturing
+  );
+  const salesReserved = quantityNumber(row?.quantityReservedForSales);
+  const transferReserved = quantityNumber(row?.quantityReservedForTransfers);
+  const picked = quantityNumber(row?.quantityPicked);
+  const ownedManufacturingReserved =
+    evidence.ownedManufacturingReservedQuantity;
+  const remainingLineQuantity =
+    evidence.remainingManufacturingOrderLineQuantity;
+  const openDemand = evidence.finishedProductOpenDemandQuantity;
+  const numericInputs = [
+    buildReserved,
+    totalManufacturingReserved,
+    salesReserved,
+    transferReserved,
+    picked,
+    ownedManufacturingReserved,
+    remainingLineQuantity,
+    openDemand,
+  ];
+  if (!numericInputs.every(Number.isFinite)) return 0;
+  if (numericInputs.some((quantity) => quantity < 0)) return 0;
+  if (!evidence.soleQualifyingManufacturingOrderLine) return 0;
+  if (salesReserved !== 0 || transferReserved !== 0 || picked !== 0) return 0;
+  if (ownedManufacturingReserved > totalManufacturingReserved) return 0;
+  const foreignManufacturingReserved =
+    totalManufacturingReserved - ownedManufacturingReserved;
+  const residual = Math.max(0, buildReserved - foreignManufacturingReserved);
+  const credit = Math.min(
+    ownedManufacturingReserved,
+    remainingLineQuantity,
+    buildReserved,
+    residual,
+    openDemand
+  );
+  return credit > 0 ? credit : 0;
+}
+
 export function effectiveBuildRunAvailableQuantity(
   row: AvailabilityRow | undefined,
   options: {
@@ -129,11 +228,15 @@ export function effectiveBuildRunAvailableQuantity(
   ) {
     return available;
   }
-  const ownedBuildReserved =
-    Number.isFinite(options.ownedBuildReservedQuantity) &&
-    options.ownedBuildReservedQuantity === parsedBuildReserved
-      ? parsedBuildReserved
-      : 0;
+  const claimedBuildReserved = options.ownedBuildReservedQuantity;
+  const buildClaimIsWithinReservation =
+    Number.isFinite(claimedBuildReserved) &&
+    claimedBuildReserved !== undefined &&
+    claimedBuildReserved >= 0 &&
+    claimedBuildReserved <= parsedBuildReserved;
+  const ownedBuildReserved = buildClaimIsWithinReservation
+    ? claimedBuildReserved
+    : 0;
   const ownedManufacturingReserved =
     Number.isFinite(options.ownedManufacturingReservedQuantity) &&
     options.ownedManufacturingReservedQuantity === parsedManufacturingReserved

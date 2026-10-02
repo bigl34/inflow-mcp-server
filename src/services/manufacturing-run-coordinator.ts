@@ -43,7 +43,11 @@ import {
   flattenManufacturingLines,
   MO_TRACE_INCLUDE,
 } from './manufacturing-order-trace.js';
-import { effectiveBuildRunAvailableQuantity } from './inventory-summaries.js';
+import {
+  directBuildOwnershipEvidence,
+  directBuildReservationCredit,
+  effectiveBuildRunAvailableQuantity,
+} from './inventory-summaries.js';
 import {
   captureManufacturingSnapshot,
   consumableManufacturingLines,
@@ -75,6 +79,16 @@ const OPERATION_COMPLETION_INTENT_ARTIFACT =
   'operation_completion_intent/v1';
 const OPERATION_COMPLETION_PLAN_ARTIFACT =
   'operation_completion_plan/v1';
+const NO_DISPATCH_CONFLICT_REASON_PREFIXES = [
+  'deterministic manufacturing order is not writable',
+  'deterministic create identity conflict:',
+  'expanded manufacturing order has no current timestamp',
+  'pre-dispatch readback drift:',
+  'unsupported pre-write shape:',
+  'final dispatch-fence revalidation failed:',
+] as const;
+const NO_DISPATCH_CONFLICT_REARM_ARTIFACT =
+  'no_dispatch_conflict_rearm/v1';
 const OPERATION_COMPLETION_DISPATCH_BARRIER_ARTIFACT =
   'operation_completion_dispatch_barrier/v1';
 const COMPONENT_INVENTORY_EXPECTATION_ARTIFACT =
@@ -177,6 +191,25 @@ export interface ManufacturingCoordinatorStore {
     run: ManufacturingRunRecord;
     dependency: ManufacturingRunDependencyRecord;
   };
+  listTransitions(operationId: string): Array<{
+    fromState: string | null;
+    toState: string;
+    stateRevision: number;
+    reason: string;
+    at: string | null;
+  }>;
+  rearmNoDispatchConflict(input: {
+    operationId: string;
+    expectedRevision: number;
+    artifact: {
+      artifactType: string;
+      artifactHash: string;
+      artifact: unknown;
+      at?: string | Date | number;
+    };
+    reason: string;
+    at?: string | Date | number;
+  }): ManufacturingRunRecord;
   getRun(operationId: string): ManufacturingRunRecord | undefined;
   getRunByHash(runHash: string): ManufacturingRunRecord | undefined;
   listDependencyRunsForReconciliation(limit?: number): ManufacturingRunRecord[];
@@ -1480,6 +1513,131 @@ export class ManufacturingRunCoordinator {
     this.reconcileDependencyOutcome(operationId);
     this.advanceParentIfReady(operationId);
     return statusOf(requireRun(this.store, operationId));
+  }
+
+  async rearmNoDispatchConflict(input: {
+    operationId: string;
+    expectedRevision: number;
+    operatorId: string;
+    approvedAt: number;
+    approvalEvidence: ManufacturingManualApprovalEvidence;
+  }): Promise<ManufacturingRunStatus> {
+    const operatorId = input.operatorId.trim();
+    const evidence = input.approvalEvidence;
+    if (
+      !operatorId ||
+      !Number.isSafeInteger(input.expectedRevision) ||
+      input.expectedRevision < 0 ||
+      !Number.isSafeInteger(input.approvedAt) ||
+      input.approvedAt <= 0 ||
+      evidence.version !== 'manufacturing-run-hmac/v1' ||
+      evidence.timestamp !== input.approvedAt ||
+      !evidence.kid.trim() ||
+      !evidence.audience.trim() ||
+      !evidence.companyId.trim() ||
+      !evidence.nonce.trim() ||
+      !/^[0-9a-f]{64}$/i.test(evidence.bodyHash)
+    ) {
+      throw new Error('SIGNED_NO_DISPATCH_REARM_REQUIRED');
+    }
+    const run = requireRun(this.store, input.operationId);
+    if (isLegacyStoredRun(run)) {
+      throw new Error('LEGACY_MANUFACTURING_RUN_RECONCILE_ONLY');
+    }
+    if (run.stateRevision !== input.expectedRevision) {
+      throw new Error(
+        `RUN_STATE_REVISION_CONFLICT: expected ${input.expectedRevision}, got ${run.stateRevision}`
+      );
+    }
+    if (run.state !== 'conflict') {
+      throw new Error(
+        `NO_DISPATCH_CONFLICT_REARM_REQUIRES_CONFLICT: ${run.state}`
+      );
+    }
+    const transitions = this.store.listTransitions(run.operationId);
+    const conflictEntries = transitions.filter(
+      (entry) => entry.toState === 'conflict'
+    );
+    const conflictReason =
+      conflictEntries[conflictEntries.length - 1]?.reason ?? '';
+    const reasonAllowed = NO_DISPATCH_CONFLICT_REASON_PREFIXES.some(
+      (prefix) => conflictReason.startsWith(prefix)
+    );
+    if (!reasonAllowed) {
+      throw new Error('NO_DISPATCH_CONFLICT_REASON_NOT_ALLOWED');
+    }
+    if (this.store.getRunArtifact(run.operationId, DISPATCH_PLAN_ARTIFACT)) {
+      throw new Error('NO_DISPATCH_CONFLICT_REARM_DISPATCH_PLANNED');
+    }
+    if (
+      this.store.getRunArtifact(
+        run.operationId,
+        OPERATION_COMPLETION_DISPATCH_BARRIER_ARTIFACT
+      )
+    ) {
+      throw new Error('NO_DISPATCH_CONFLICT_REARM_UNSUPPORTED_DOMAIN');
+    }
+    this.consumeRateBudget();
+    const order = await this.client.get<ManufacturingOrder>(
+      `/manufacturing-orders/${run.manufacturingOrderId}`,
+      { include: MO_TRACE_INCLUDE }
+    );
+    const pickLineCount = (order.pickLines ?? []).length;
+    const pickMatchingCount = (order.pickMatchings ?? []).length;
+    const putLineCount = (order.putLines ?? []).length;
+    if (pickLineCount > 0 || pickMatchingCount > 0 || putLineCount > 0) {
+      throw new Error('NO_DISPATCH_CONFLICT_REARM_ORDER_ALREADY_WRITTEN');
+    }
+    if (order.isCancelled === true || order.isCompleted === true) {
+      throw new Error('NO_DISPATCH_CONFLICT_REARM_ORDER_CLOSED');
+    }
+    const beginPlan = artifactValue<StoredBeginPlan>(
+      this.store,
+      run.operationId,
+      BEGIN_PLAN_ARTIFACT
+    );
+    const storedSnapshot = artifactValue<StoredBeginSnapshot>(
+      this.store,
+      run.operationId,
+      BEGIN_SNAPSHOT_ARTIFACT
+    );
+    const liveSnapshot = captureManufacturingSnapshot(order, beginPlan.begin);
+    if (liveSnapshot.snapshotHash !== storedSnapshot.snapshot.snapshotHash) {
+      throw new Error('NO_DISPATCH_CONFLICT_REARM_SNAPSHOT_DRIFT');
+    }
+    const now = this.clock.now();
+    const auditArtifact = {
+      schemaVersion: 'no-dispatch-conflict-rearm/v1' as const,
+      priorState: run.state,
+      priorStateRevision: run.stateRevision,
+      priorConflictReason: conflictReason,
+      operatorId,
+      approvedAt: input.approvedAt,
+      orderReadback: {
+        manufacturingOrderId: run.manufacturingOrderId,
+        pickLineCount,
+        pickMatchingCount,
+        putLineCount,
+      },
+      verifiedSnapshotHash: liveSnapshot.snapshotHash,
+    };
+    this.store.rearmNoDispatchConflict({
+      operationId: run.operationId,
+      expectedRevision: input.expectedRevision,
+      artifact: {
+        artifactType:
+          `${NO_DISPATCH_CONFLICT_REARM_ARTIFACT}:revision:${input.expectedRevision}`,
+        artifactHash: canonicalHash(
+          auditArtifact,
+          'manufacturing-run/no-dispatch-conflict-rearm/v1'
+        ),
+        artifact: auditArtifact,
+        at: now,
+      },
+      reason: `operator re-arm after no-dispatch conflict [operator:${operatorId}]`,
+      at: now,
+    });
+    return statusOf(requireRun(this.store, run.operationId));
   }
 
   async rearmProvenNoWrite(input: {
@@ -3433,6 +3591,50 @@ export class ManufacturingRunCoordinator {
       bulkBuckets: [],
     };
     const currentLines = flattenManufacturingLines(current.lines ?? []);
+    const beginPlan = artifactValue<StoredBeginPlan>(
+      this.store,
+      operationId,
+      BEGIN_PLAN_ARTIFACT
+    );
+    const finishedProductId =
+      beginPlan.begin.normalizedIdentity.finishedProductId.trim();
+    const rootOutputLines = currentLines.filter(
+      (line) => line.manufacturingOrderLineId === beginPlan.begin.rootLineId
+    );
+    const rootOutputQuantityText = rootOutputLines.length === 1
+      ? rootOutputLines[0]!.quantity?.standardQuantity ??
+        rootOutputLines[0]!.quantity?.uomQuantity
+      : undefined;
+    const finishedOutputQuantity = rootOutputQuantityText === undefined
+      ? 0
+      : Number(normalizeDecimal(rootOutputQuantityText));
+    let finishedSummaryPromise: Promise<ProductSummary> | null = null;
+    const finishedProductReservedForSales = async (): Promise<number> => {
+      if (finishedSummaryPromise === null) {
+        this.consumeRateBudget();
+        finishedSummaryPromise = this.client.get<ProductSummary>(
+          `/products/${finishedProductId}/summary`,
+          { include: ['locationSummaries', 'sublocationSummaries'] }
+        );
+      }
+      let finishedSummary: ProductSummary;
+      try {
+        finishedSummary = await finishedSummaryPromise;
+      } catch (error) {
+        if (
+          error instanceof CoordinatorRateLimitedError ||
+          isWorkerOwnershipError(error)
+        ) {
+          throw error;
+        }
+        return 0;
+      }
+      if (finishedSummary.quantityReservedForSales === undefined) return 0;
+      const parsed = Number(
+        normalizeDecimal(finishedSummary.quantityReservedForSales)
+      );
+      return Number.isFinite(parsed) && parsed > 0 ? parsed : 0;
+    };
     const currentIntentOwnership = (
       intent: ComponentIntentRecord
     ): { owned: boolean; nested: boolean } => {
@@ -3588,7 +3790,7 @@ export class ManufacturingRunCoordinator {
           current.locationId === locationId &&
           bucketIntents.length > 0 &&
           bucketOwnership.every((entry) => entry.ownership.owned);
-        const ownedBuildReservedQuantity = allowBuildReserved
+        const nestedBuildReservedQuantity = allowBuildReserved
           ? bucketOwnership.reduce(
               (sum, entry) =>
                 entry.ownership.nested
@@ -3597,6 +3799,33 @@ export class ManufacturingRunCoordinator {
               0
             )
           : 0;
+        const bucketIsShortWithoutCredit =
+          !Number.isFinite(aggregateAvailable) ||
+          aggregateAvailable < required;
+        const directCreditEligible =
+          allowBuildReserved &&
+          nestedBuildReservedQuantity === 0 &&
+          bucketIsShortWithoutCredit &&
+          finishedProductId !== '' &&
+          finishedOutputQuantity > 0;
+        const ownedBuildReservedQuantity = directCreditEligible
+          ? directBuildReservationCredit(
+              summary,
+              directBuildOwnershipEvidence({
+                order: current,
+                componentLineIds: bucketIntents.map(
+                  (intent) => intent.rawLineId
+                ),
+                componentQuantities: bucketIntents.map((intent) =>
+                  Number(normalizeDecimal(intent.quantity))
+                ),
+                summaryRow: summary,
+                finishedProductReservedForSales:
+                  await finishedProductReservedForSales(),
+                finishedOutputQuantity,
+              })
+            )
+          : nestedBuildReservedQuantity;
         const locations = (summary.locationSummaries ?? []).filter(
           (candidate) => candidate.locationId === locationId
         );

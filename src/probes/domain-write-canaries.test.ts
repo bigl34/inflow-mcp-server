@@ -1,9 +1,8 @@
-import { mkdtemp, rm } from 'node:fs/promises';
-import { join } from 'node:path';
-import { tmpdir } from 'node:os';
+import { rm } from 'node:fs/promises';
 import { describe, expect, it, vi } from 'vitest';
 import { InflowApiError, type InflowClient } from '../client/inflow.js';
 import type { InflowConfig } from '../config.js';
+import { createTempStateDir } from '../core/temp-state.fixtures.js';
 import type { ManufacturingOrder, Product, ProductGroup } from '../types/inflow.js';
 import {
   manufacturingOperationCompletionStateHash,
@@ -237,7 +236,7 @@ describe('domain release canaries', () => {
   });
 
   it('proves exact operation completion and records the provider-retained operation date as inert cleanup residue', async () => {
-    const stateDir = await mkdtemp(join(tmpdir(), 'inflow-operation-canary-'));
+    const stateDir = await createTempStateDir('inflow-operation-canary-');
     const beginInput = {
       identity: {
         schemaVersion: 'manufacturing-run-identity/v2' as const,

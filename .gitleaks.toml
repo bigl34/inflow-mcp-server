@@ -1,0 +1,8 @@
+[extend]
+useDefault = true
+
+[allowlist]
+description = "Exact synthetic credentials used by public test fixtures"
+regexes = [
+  '''^vendor-discount-1$''',
+]

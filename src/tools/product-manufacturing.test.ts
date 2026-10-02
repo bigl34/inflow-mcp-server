@@ -1,10 +1,8 @@
 import { describe, expect, it, vi } from 'vitest';
-import { chmod, mkdtemp } from 'node:fs/promises';
-import { tmpdir } from 'node:os';
-import { join } from 'node:path';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import type { InflowClient } from '../client/inflow.js';
 import type { InflowConfig } from '../config.js';
+import { createTempStateDir } from '../core/temp-state.fixtures.js';
 import type { Product } from '../types/inflow.js';
 import {
   assertManufacturingApiVersion,
@@ -116,8 +114,7 @@ async function registeredHarness(
   apiVersion = '2026-04-13',
   safeWritesEnabled = true
 ) {
-  const stateDir = await mkdtemp(join(tmpdir(), 'inflow-manufacturing-tool-'));
-  await chmod(stateDir, 0o700);
+  const stateDir = await createTempStateDir('inflow-manufacturing-tool-');
   const fixture = mockClient(initial, children);
   const handlers: Record<string, (args: any) => Promise<any>> = {};
   const server = {
@@ -239,8 +236,7 @@ describe('manufacturing normalization and hashing', () => {
     const get = vi.fn(async () =>
       product({ itemBoms: [], productOperations: undefined })
     );
-    const stateDir = await mkdtemp(join(tmpdir(), 'inflow-manufacturing-rollback-'));
-    await chmod(stateDir, 0o700);
+    const stateDir = await createTempStateDir('inflow-manufacturing-rollback-');
     registerProductManufacturingTools(
       server,
       { get } as unknown as InflowClient,

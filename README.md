@@ -66,7 +66,7 @@ export INFLOW_API_VERSION="2026-04-13"  # Default API version
 # Safe preview/apply control plane (closed by default)
 export INFLOW_ENABLE_SAFE_WRITES="false"
 export INFLOW_ENABLE_STOCK_WRITES="false"
-# Manufacturing pick-batch additionally requires this gate and its attestation
+# Manufacturing pick-batch additionally requires this gate
 export INFLOW_ENABLE_MANUFACTURING_PICK_BATCH_WRITES="false"
 # Deprecated diagnostic compatibility inputs; these authorize no safe writes
 export INFLOW_ENABLE_MANUFACTURING_WRITES="false"
@@ -129,9 +129,9 @@ deterministic notification ID inside the verified payload, so an out-of-order
 or replayed callback cannot claim another pending notification. Slack
 notification posts use a separate claim/ack outbox: an ambiguous post must be marked
 `delivery_unknown` and reconciled explicitly, never reposted automatically.
-The coordinator's stock-moving manufacturing write flags remain closed until
-their separately approved contract canary and production gate authorize them.
-That coordinator boundary is separate from product BOM/config confirmation.
+The coordinator's stock-moving manufacturing writes are controlled by their
+environment gates alone. That coordinator boundary is separate from product
+BOM/config confirmation.
 
 New manufacturing runs use `manufacturing-run-identity/v2`, keeping the
 source serial and finished serial as separate immutable identities. Before
@@ -179,7 +179,7 @@ Add to your Claude Desktop configuration file:
 |------|-------------|
 | `list_products` | Search and filter products |
 | `get_product` | Get product details by ID (use `include=itemBoms` for BOM) |
-| `set_product` | Preview/apply a bounded product create/update; patch-mode `customFields` merges supplied keys while preserving siblings |
+| `set_product` | Preview/apply a bounded product create/update; patch-mode `customFields` merges supplied keys while preserving siblings (every `customFields`-bearing `set_*` adapter shares this rule) |
 | `upsert_product` | **Deprecated immediate write** retained only for the 1.4 compatibility window |
 | `get_inventory_summary` | Get stock levels across locations |
 | `get_inventory_summaries_batch` | Batch get stock levels (max 100) |
@@ -248,14 +248,20 @@ Add to your Claude Desktop configuration file:
 | `get_manufacturing_order` | Get work order details |
 | `upsert_manufacturing_order` | Create a work order or partially update an existing one. Updates preserve unmentioned fields, patch output quantity/serials in place, merge input-line patches, and remove lines listed in `deleteInputLineIds`. |
 | `get_manufacturing_order_trace` | Join output lines, pick lines, pick matchings, and serial anomalies |
-| `reconcile_manufacturing_order_serials` | Preview exact-ID linked serial changes; apply is canary-gated |
+| `reconcile_manufacturing_order_serials` | Preview exact-ID linked serial changes; apply requires the safe and stock write gates |
 
 ### Status and safe writes
 
 `get_mcp_status` returns additive `mcp-status/v2` data without exposing the
 company ID or credentials. `writePolicies.safe.operations` reports each
 operation's fixed `ordinary` or `stock` classification, static adapter support,
-effective apply state, required gates, and reason. Old per-domain status fields
+effective apply state, required gates, and reason. Every registered `set_*`,
+receipt, reconcile, and `remove_webhook` adapter is statically supported; apply
+is controlled only by `INFLOW_ENABLE_SAFE_WRITES` (all) and
+`INFLOW_ENABLE_STOCK_WRITES` (stock-affecting). Adapter projections follow the
+provider swagger: order and adjustment/transfer rows are `lines[]` with
+quantity objects, customers and vendors have no nested contacts include, and
+webhooks carry no rowversion. Old per-domain status fields
 remain present but are marked deprecated and disabled. `legacyBypassActive` is
 always true while deprecated immediate-write tools are registered.
 
@@ -266,8 +272,9 @@ The safe control plane has only two general switches:
 - stock-affecting dispatch also requires
   `INFLOW_ENABLE_STOCK_WRITES=true`.
 
-Manufacturing pick-batch additionally requires its dedicated environment gate
-and valid coordinator attestation for the final build. Product
+Manufacturing pick-batch additionally requires its dedicated environment gate.
+Canary attestations are release evidence only and are not checked at runtime
+for the coordinator domains. Product
 BOM/manufacturing configuration retains its explicit-confirmation policy and
 also requires the master safe-write gate. Every applicable gate is checked
 again immediately before network dispatch, so closing a gate invalidates an
@@ -289,10 +296,86 @@ product-group, or BOM/manufacturing tools. Unknown and mixed operations fail
 closed. Static support remains per concrete adapter, so opening a gate cannot
 expose an unfinished adapter.
 
-`set_product` is a released ordinary adapter. Patch mode deep-merges supplied
-`customFields` keys into the complete current custom-field object, including
-explicit falsy and `null` values; omitted sibling keys are preserved. Patch
-mode does not delete keys. Replace mode retains whole-object semantics.
+`set_product` is a released ordinary adapter. On every adapter whose writable
+projection includes `customFields` (`set_product`, `set_sales_order`,
+`set_purchase_order`, `set_customer`, `set_vendor`, `set_stock_adjustment`,
+`set_stock_transfer`, `set_manufacturing_order`), patch mode deep-merges the
+supplied `customFields` keys into the complete current custom-field object,
+including explicit falsy and `null` values; omitted sibling keys are preserved
+and sent in the PUT body, because inFlow replaces the whole object on write.
+Patch mode does not delete keys, and a non-object patch `customFields`
+container fails closed as `INVALID_CUSTOM_FIELDS` on every such adapter.
+Replace mode retains whole-object semantics; only `set_product` validates the
+replace-mode container. Before the `<resource>/safe-v4` bump only
+`set_product` merged; a partial patch on any other adapter replaced the object
+and blanked its siblings, and readback could not catch it because desired and
+actual dropped the same keys.
+
+The `set_product` writable projection is `name`, `description`, `sku`, `categoryId`,
+`isActive`, `weight`, and `customFields` — the scalar properties the Product
+schema actually stores. `barcode`, `cost`, `reorderPoint`, `reorderQuantity`,
+and `weightUnit` are rejected up front with `OPERATION_UNSUPPORTED` instead of
+being sent: inFlow keeps barcodes in `productBarcodes[]` rows and reorder
+thresholds in per-location `reorderSettings[]` rows, `cost` is the read-only
+`ProductCost` relation derived from purchase receipts and vendor prices, and
+the weight unit is a company-wide setting. A PUT carrying any of them returns
+200 and silently drops the key, so the readback could never verify. `weight`
+is a `decimal` the provider echoes as four-decimal text (`2.5` → `"2.5000"`),
+so the semantic projection used for diffs, staleness hashes, update readback
+and reconciliation canonicalises only the fields a definition declares in
+`decimalFields`; `sku` and every other text field in that projection stay
+verbatim, so a leading-zero edit is still a real write. (The create path's
+requested-field comparison keeps its earlier decimal-tolerant matching on
+every requested leaf.) This moved the product adapter version to
+`product/safe-v5`; retained idempotency keys and preview tokens do not cross
+that bump. The same echo applies to every other decimal the provider stores:
+`exchangeRate` (ten decimals), customer and vendor `discount` (two),
+`lines[].unitPrice` / `subTotal` / tax rates (five), and every
+`quantity.standardQuantity` / `uomQuantity` on order, adjustment, transfer and
+manufacturing rows (four). Each definition declares those `decimalPaths`
+(`[]` walks a row array) and the projection canonicalises exactly those
+leaves, so `set_sales_order`, `set_purchase_order`, `set_customer`,
+`set_vendor`, `set_stock_adjustment`, `set_stock_transfer` and
+`set_manufacturing_order` moved to `<resource>/safe-v5`; `set_stock_count`,
+`set_taxing_scheme` and `set_webhook` carry no decimals and stay on
+`safe-v2`. Row writes in patch or replace mode still compare the caller's rows
+against the provider's complete rows, so a row that omits provider-populated
+fields (`subTotal`, `description`, tax codes) verifies only through the
+create path's requested-field comparison. `get_mutation_status reconcile=true` still settles
+`product/safe-v2`..`safe-v4` journal records: it hashes the readback with the
+twelve-field projection those versions recorded, so the reconcilable subset
+described above is unchanged, while `safe-v5` records use the seven-field
+projection.
+
+inFlow stores checkbox custom fields as the text `True`/`False` and date
+custom fields as `MM/DD/YYYY 00:00:00`, whatever JSON type the write supplied.
+Every generic adapter with a `customFields` projection therefore reads the
+tenant's `/custom-field-definitions` (cached per process for five minutes;
+`CUSTOM_FIELD_DEFINITIONS_UNAVAILABLE` fails the call closed) and canonicalises
+only the slots whose definition type is `checkbox` or `date` inside the
+semantic projection used for diffs, staleness hashes, readback verification,
+and `get_mutation_status` reconciliation: on a checkbox slot `true`/`"True"`
+compare equal, and on a date slot `2026-09-18`, `2026-09-18T00:00:00.000Z`,
+and `09/18/2026 00:00:00` compare equal. Text slots are compared verbatim, so a
+case-only text edit is still a real write. The dispatched body is not
+rewritten. Values a checkbox or date slot holds outside those exact forms
+(`Yes`, `-`, non-midnight timestamps, impossible dates) are compared verbatim,
+so a write that inFlow reshaped in any other way still reports
+`VERIFICATION_MISMATCH`. This changed the product adapter version to
+`product/safe-v4` and the other `customFields`-bearing adapters to
+`<resource>/safe-v3`; the sibling-preserving patch merge then moved those
+other adapters to `<resource>/safe-v4`. Retained idempotency keys and preview
+tokens do not cross either bump (a retained key is refused as
+`IDEMPOTENCY_KEY_CONFLICT`). Product journal records written under earlier
+versions keep the `desiredHash` computed from their raw values, so
+reconciliation advances them only when that raw projection already equals the
+canonical readback (boolean-only patches on a product whose date slots are
+empty); records that carried a date value stay `applied_unverified` and need a
+fresh preview/apply. `get_mutation_status` reconciliation is registered only
+for `product`, `product-prices`, and `product-manufacturing-config`; a
+non-product record left under `safe-v2` or `safe-v3` returns
+`ADAPTER_RECONCILIATION_NOT_REGISTERED`, so it cannot be advanced and needs an
+owner check of the journal `before` state plus a fresh preview/apply.
 
 Product creation verifies the planned product ID and explicitly supplied
 fields, allowing inFlow to populate omitted fields with defaults. The signed
@@ -302,7 +385,12 @@ Existing-product updates retain full desired-state verification. Recovery of a
 failed create requires the original request and retained idempotency key;
 readback can then verify the same operation without dispatching another write.
 Legacy records missing the input binding require a reviewed recovery from the
-recorded original request before that key can be reused.
+recorded original request before that key can be reused:
+`MutationJournal.restoreInputScope(operationId, inputHash)` binds the hash of
+that request to the record and its idempotency mapping, only for reconcilable
+keyed creates that carry no binding yet, after the caller has confirmed the
+request reproduces the journaled `desiredHash`. The CLI runs the server from
+`dist/`, so a source fix is not live until `npm run build` has been rerun.
 
 Idempotency keys are required for creates, additive changes, stock-affecting
 changes, and multi-step mutations. Deterministic full replacement with
@@ -438,7 +526,7 @@ confirmation and now require `INFLOW_ENABLE_SAFE_WRITES=true` at apply. The
 manufacturing probe remains useful as non-authorizing API/serializer and
 optimistic-concurrency characterization. Stock-moving manufacturing-order
 writes require both general gates; pick-batch also requires its dedicated
-coordinator gate and attestation.
+coordinator gate.
 
 ### Manufacturing pick-batch live canary v2
 

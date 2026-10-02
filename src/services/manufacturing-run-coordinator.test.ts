@@ -1,10 +1,10 @@
-import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { readFile, writeFile } from 'node:fs/promises';
 import { rmSync, writeFileSync } from 'node:fs';
-import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { InflowApiError } from '../client/inflow.js';
 import { canonicalHash } from '../core/canonical-json.js';
+import { createTempStateDir } from '../core/temp-state.fixtures.js';
 import syntheticGolden from './fixtures/manufacturing-order.synthetic-golden.json' with { type: 'json' };
 import {
   planManufacturingRunBegin,
@@ -610,6 +610,46 @@ class FakeStore {
       this.queue = this.queue.filter((row) => row.operationId !== input.operationId);
     }
     return run;
+  }
+
+  listTransitions(operationId: string): Array<Record<string, unknown>> {
+    return this.transitions
+      .filter((row) => row.operationId === operationId)
+      .map((row) => ({
+        fromState: row.fromState ?? null,
+        toState: String(row.toState),
+        stateRevision: Number(row.stateRevision),
+        reason: String(row.reason),
+        at: new Date(row.at).toISOString(),
+      }));
+  }
+
+  rearmNoDispatchConflict(input: any): FakeRun {
+    const run = this.runs.get(input.operationId)!;
+    if (run.state !== 'conflict') {
+      throw new Error(
+        `NO_DISPATCH_CONFLICT_REARM_REQUIRES_CONFLICT: ${run.state}`
+      );
+    }
+    if (this.getRunArtifact(input.operationId, 'dispatch_plan')) {
+      throw new Error('NO_DISPATCH_CONFLICT_REARM_DISPATCH_PLANNED');
+    }
+    if (
+      this.getRunArtifact(
+        input.operationId,
+        'operation_completion_dispatch_barrier/v1'
+      )
+    ) {
+      throw new Error('NO_DISPATCH_CONFLICT_REARM_UNSUPPORTED_DOMAIN');
+    }
+    this.bindRunArtifact({ operationId: input.operationId, ...input.artifact });
+    return this.transitionRun({
+      operationId: input.operationId,
+      expectedRevision: input.expectedRevision,
+      toState: 'collecting',
+      reason: input.reason,
+      at: input.at,
+    });
   }
 
   markDispatchUncertain(input: any): FakeRun {
@@ -2150,24 +2190,72 @@ describe('single-dispatch worker and readback reconciliation', () => {
     });
   });
 
-  it('rejects the same dual reservation projection for a direct component', async () => {
+  const directDualReservationSummary = {
+    productId: 'bulk-component',
+    quantityOnHand: '1',
+    quantityAvailable: '-1',
+    rawQuantityAvailable: '0',
+    quantityAllocated: '0',
+    quantityOnOrder: '0',
+    quantityReserved: '2',
+    quantityReservedForSales: '0',
+    quantityReservedForManufacturing: '1',
+    quantityReservedForTransfers: '0',
+    quantityReservedForBuilds: '1',
+    quantityPicked: '0',
+    locationSummaries: [],
+  };
+
+  const finishedDemandSummary = (reservedForSales: string) => ({
+    productId: 'finished-product',
+    quantityOnHand: '0',
+    quantityAvailable: '-1',
+    rawQuantityAvailable: '-1',
+    quantityAllocated: '0',
+    quantityOnOrder: '0',
+    quantityReserved: reservedForSales,
+    quantityReservedForSales: reservedForSales,
+    quantityReservedForManufacturing: '0',
+    quantityReservedForTransfers: '0',
+    quantityReservedForBuilds: '0',
+    quantityPicked: '0',
+    locationSummaries: [],
+  });
+
+  it('accepts a direct dual reservation the current MO provably retires', async () => {
     const harness = createHarness();
     await makeReady(harness);
-    harness.client.summaryOverrides.set('bulk-component', {
-      productId: 'bulk-component',
-      quantityOnHand: '1',
-      quantityAvailable: '-1',
-      rawQuantityAvailable: '0',
-      quantityAllocated: '0',
-      quantityOnOrder: '0',
-      quantityReserved: '2',
-      quantityReservedForSales: '0',
-      quantityReservedForManufacturing: '1',
-      quantityReservedForTransfers: '0',
-      quantityReservedForBuilds: '1',
-      quantityPicked: '0',
-      locationSummaries: [],
+    harness.client.summaryOverrides.set(
+      'bulk-component',
+      directDualReservationSummary
+    );
+    harness.client.summaryOverrides.set(
+      'finished-product',
+      finishedDemandSummary('1')
+    );
+    harness.client.dispatchBehavior = (request) => {
+      const applied = structuredClone(request.options.body);
+      applied.timestamp = '0000000000000011';
+      harness.client.orders.set(harness.begin.manufacturingOrderId, applied);
+      return applied;
+    };
+
+    await expect(harness.coordinator.runOne()).resolves.toMatchObject({
+      outcome: 'applied_verified',
     });
+  });
+
+  it('rejects a direct dual reservation with no sales-order demand behind it', async () => {
+    const harness = createHarness();
+    await makeReady(harness);
+    harness.client.summaryOverrides.set(
+      'bulk-component',
+      directDualReservationSummary
+    );
+    harness.client.summaryOverrides.set(
+      'finished-product',
+      finishedDemandSummary('0')
+    );
 
     await expect(harness.coordinator.runOne()).resolves.toMatchObject({
       outcome: 'conflict',
@@ -3786,7 +3874,7 @@ describe('dependencies, operations, restore quarantine, and singleton hooks', ()
   });
 
   it('holds a non-stale process lock exclusively until the owner releases it', async () => {
-    const directory = await mkdtemp(join(tmpdir(), 'inflow-coordinator-lock-'));
+    const directory = await createTempStateDir('inflow-coordinator-lock-');
     const lockPath = join(directory, 'coordinator.lock');
     const acquire = exported('acquireNonStaleProcessLock');
     const lock = acquire(lockPath, process.pid);
@@ -3794,11 +3882,10 @@ describe('dependencies, operations, restore quarantine, and singleton hooks', ()
     lock.release();
     const replacement = acquire(lockPath, process.pid);
     replacement.release();
-    await rm(directory, { recursive: true, force: true });
   });
 
   it('fails closed if a stale process lock name is swapped before removal', async () => {
-    const directory = await mkdtemp(join(tmpdir(), 'inflow-coordinator-lock-race-'));
+    const directory = await createTempStateDir('inflow-coordinator-lock-race-');
     const lockPath = join(directory, 'coordinator.lock');
     const acquire = exported('acquireNonStaleProcessLock');
     await writeFile(lockPath, JSON.stringify({ pid: 999_999 }), { mode: 0o600 });
@@ -3816,11 +3903,10 @@ describe('dependencies, operations, restore quarantine, and singleton hooks', ()
     expect(JSON.parse(await readFile(lockPath, 'utf8'))).toEqual({
       pid: process.pid,
     });
-    await rm(directory, { recursive: true, force: true });
   });
 
   it('fails closed if the owned process lock name is swapped during release', async () => {
-    const directory = await mkdtemp(join(tmpdir(), 'inflow-coordinator-release-race-'));
+    const directory = await createTempStateDir('inflow-coordinator-release-race-');
     const lockPath = join(directory, 'coordinator.lock');
     const acquire = exported('acquireNonStaleProcessLock');
     const lock = acquire(lockPath, process.pid, {
@@ -3838,6 +3924,161 @@ describe('dependencies, operations, restore quarantine, and singleton hooks', ()
     expect(JSON.parse(await readFile(lockPath, 'utf8'))).toEqual({
       pid: process.pid + 1,
     });
-    await rm(directory, { recursive: true, force: true });
   });
+});
+
+describe('no-dispatch conflict re-arm', () => {
+  const approvalEvidence = {
+    version: 'manufacturing-run-hmac/v1' as const,
+    kid: 'operator-key-1',
+    audience: 'zapier-private-app',
+    companyId: 'company-fixture',
+    timestamp: 1_767_225_600,
+    nonce: 'no-dispatch-rearm-nonce',
+    bodyHash: 'b'.repeat(64),
+  };
+
+  async function conflictedHarness() {
+    const harness = createHarness();
+    await makeReady(harness);
+    harness.client.summaryOverrides.set('bulk-component', {
+      productId: 'bulk-component',
+      quantityOnHand: '1',
+      quantityAvailable: '-1',
+      rawQuantityAvailable: '0',
+      quantityAllocated: '0',
+      quantityOnOrder: '0',
+      quantityReserved: '2',
+      quantityReservedForSales: '0',
+      quantityReservedForManufacturing: '1',
+      quantityReservedForTransfers: '0',
+      quantityReservedForBuilds: '1',
+      quantityPicked: '0',
+      locationSummaries: [],
+    });
+    harness.client.summaryOverrides.set('finished-product', {
+      productId: 'finished-product',
+      quantityOnHand: '0',
+      quantityAvailable: '0',
+      rawQuantityAvailable: '0',
+      quantityAllocated: '0',
+      quantityOnOrder: '0',
+      quantityReserved: '0',
+      quantityReservedForSales: '0',
+      quantityReservedForManufacturing: '0',
+      quantityReservedForTransfers: '0',
+      quantityReservedForBuilds: '0',
+      quantityPicked: '0',
+      locationSummaries: [],
+    });
+    await expect(harness.coordinator.runOne()).resolves.toMatchObject({
+      outcome: 'conflict',
+    });
+    const run = harness.store.getRun(harness.begin.operationId)!;
+    return { harness, revision: run.stateRevision };
+  }
+
+  function rearm(harness: any, revision: number, overrides: any = {}) {
+    return harness.coordinator.rearmNoDispatchConflict({
+      operationId: harness.begin.operationId,
+      expectedRevision: revision,
+      operatorId: 'operator-a',
+      approvedAt: approvalEvidence.timestamp,
+      approvalEvidence,
+      ...overrides,
+    });
+  }
+
+  it('returns a provably undispatched conflict to collecting', async () => {
+    const { harness, revision } = await conflictedHarness();
+    const status = await rearm(harness, revision);
+    expect(status.state).toBe('collecting');
+    expect(harness.client.dispatchCalls).toBe(0);
+    const audit = harness.store.getRunArtifact(
+      harness.begin.operationId,
+      `no_dispatch_conflict_rearm/v1:revision:${revision}`
+    );
+    expect(audit?.artifact).toMatchObject({
+      priorState: 'conflict',
+      operatorId: 'operator-a',
+      orderReadback: {
+        pickLineCount: 0,
+        pickMatchingCount: 0,
+        putLineCount: 0,
+      },
+    });
+  });
+
+  it('refuses a second re-arm once the run has left conflict', async () => {
+    const { harness, revision } = await conflictedHarness();
+    await rearm(harness, revision);
+    const current = harness.store.getRun(harness.begin.operationId)!;
+    await expect(rearm(harness, current.stateRevision))
+      .rejects.toThrow(/NO_DISPATCH_CONFLICT_REARM_REQUIRES_CONFLICT/);
+  });
+
+  it('refuses a conflict reason outside the pre-dispatch allow-list', async () => {
+    const { harness, revision } = await conflictedHarness();
+    const transitions = harness.store.transitions;
+    const conflictRow = [...transitions]
+      .reverse()
+      .find((row: any) => row.toState === 'conflict');
+    expect(conflictRow.reason).toMatch(/^pre-dispatch readback drift:/);
+    conflictRow.reason =
+      'operation completion readback is neither exact pre-state nor exact expected post-state';
+    await expect(rearm(harness, revision))
+      .rejects.toThrow(/NO_DISPATCH_CONFLICT_REASON_NOT_ALLOWED/);
+  });
+
+  it('refuses a stale expected revision', async () => {
+    const { harness, revision } = await conflictedHarness();
+    await expect(rearm(harness, revision - 1))
+      .rejects.toThrow(/RUN_STATE_REVISION_CONFLICT/);
+  });
+
+  it('refuses an unsigned or mismatched approval', async () => {
+    const { harness, revision } = await conflictedHarness();
+    await expect(rearm(harness, revision, {
+      approvedAt: approvalEvidence.timestamp + 1,
+    })).rejects.toThrow(/SIGNED_NO_DISPATCH_REARM_REQUIRED/);
+    await expect(rearm(harness, revision, { operatorId: '  ' }))
+      .rejects.toThrow(/SIGNED_NO_DISPATCH_REARM_REQUIRED/);
+  });
+
+  it('refuses when a dispatch plan artifact exists', async () => {
+    const { harness, revision } = await conflictedHarness();
+    harness.store.bindRunArtifact({
+      operationId: harness.begin.operationId,
+      artifactType: 'dispatch_plan',
+      artifactHash: 'c'.repeat(64),
+      artifact: { mode: 'complete' },
+      at: harness.clock.now(),
+    });
+    await expect(rearm(harness, revision))
+      .rejects.toThrow(/NO_DISPATCH_CONFLICT_REARM_DISPATCH_PLANNED/);
+  });
+
+  it('refuses when an operation-completion dispatch barrier exists', async () => {
+    const { harness, revision } = await conflictedHarness();
+    harness.store.bindRunArtifact({
+      operationId: harness.begin.operationId,
+      artifactType: 'operation_completion_dispatch_barrier/v1',
+      artifactHash: 'd'.repeat(64),
+      artifact: { correlationId: 'x' },
+      at: harness.clock.now(),
+    });
+    await expect(rearm(harness, revision))
+      .rejects.toThrow(/NO_DISPATCH_CONFLICT_REARM_UNSUPPORTED_DOMAIN/);
+  });
+
+  it('refuses when the live order already shows a write', async () => {
+    const { harness, revision } = await conflictedHarness();
+    const order = harness.client.orders.get(
+      harness.begin.manufacturingOrderId
+    );
+    order.putLines = [{ manufacturingOrderPutLineId: 'put-1' }];
+    await expect(rearm(harness, revision))
+      .rejects.toThrow(/NO_DISPATCH_CONFLICT_REARM_ORDER_ALREADY_WRITTEN/);
+  });
+
 });

@@ -1,10 +1,8 @@
-import { chmod, mkdtemp } from 'node:fs/promises';
-import { tmpdir } from 'node:os';
-import { join } from 'node:path';
 import { describe, expect, it, vi } from 'vitest';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import type { InflowClient } from '../client/inflow.js';
 import type { InflowConfig } from '../config.js';
+import { createTempStateDir } from '../core/temp-state.fixtures.js';
 import type { Product } from '../types/inflow.js';
 import { registerProductPriceTools } from './product-prices.js';
 
@@ -13,8 +11,7 @@ function payload(result: { content: Array<{ text: string }> }) {
 }
 
 async function harness() {
-  const stateDir = await mkdtemp(join(tmpdir(), 'inflow-price-tool-'));
-  await chmod(stateDir, 0o700);
+  const stateDir = await createTempStateDir('inflow-price-tool-');
   let current: Product = {
     productId: 'product-1',
     name: 'Product',

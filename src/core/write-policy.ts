@@ -32,9 +32,6 @@ export interface SafeWriteAuthorization extends SafeWriteOperationPolicy {
   reasonCode?: 'OPERATION_UNSUPPORTED' | 'SAFE_WRITES_DISABLED' | 'STOCK_WRITES_DISABLED';
 }
 
-const UNSUPPORTED_PENDING_CANARY =
-  'Adapter apply remains unavailable until its operation-specific release canary passes.';
-
 const POLICIES: readonly SafeWriteOperationPolicy[] = [
   {
     operation: 'set_product_prices',
@@ -63,93 +60,80 @@ const POLICIES: readonly SafeWriteOperationPolicy[] = [
   {
     operation: 'set_customer',
     classification: 'ordinary',
-    staticSupport: false,
+    staticSupport: true,
     idempotency: 'create-only',
-    unsupportedReason: UNSUPPORTED_PENDING_CANARY,
   },
   {
     operation: 'set_vendor',
     classification: 'ordinary',
-    staticSupport: false,
+    staticSupport: true,
     idempotency: 'create-only',
-    unsupportedReason: UNSUPPORTED_PENDING_CANARY,
   },
   {
     operation: 'set_taxing_scheme',
     classification: 'ordinary',
-    staticSupport: false,
+    staticSupport: true,
     idempotency: 'create-only',
-    unsupportedReason: UNSUPPORTED_PENDING_CANARY,
   },
   {
     operation: 'set_webhook',
     classification: 'ordinary',
-    staticSupport: false,
+    staticSupport: true,
     idempotency: 'create-only',
-    unsupportedReason: UNSUPPORTED_PENDING_CANARY,
   },
   {
     operation: 'remove_webhook',
     classification: 'ordinary',
-    staticSupport: false,
+    staticSupport: true,
     idempotency: 'delete-absence-verified',
-    unsupportedReason: UNSUPPORTED_PENDING_CANARY,
   },
   {
     operation: 'set_sales_order',
     classification: 'stock',
-    staticSupport: false,
+    staticSupport: true,
     idempotency: 'required',
-    unsupportedReason: UNSUPPORTED_PENDING_CANARY,
   },
   {
     operation: 'set_purchase_order',
     classification: 'stock',
-    staticSupport: false,
+    staticSupport: true,
     idempotency: 'required',
-    unsupportedReason: UNSUPPORTED_PENDING_CANARY,
   },
   {
     operation: 'set_purchase_order_receipts',
     classification: 'stock',
-    staticSupport: false,
+    staticSupport: true,
     idempotency: 'required',
-    unsupportedReason: UNSUPPORTED_PENDING_CANARY,
   },
   {
     operation: 'set_stock_adjustment',
     classification: 'stock',
-    staticSupport: false,
+    staticSupport: true,
     idempotency: 'required',
-    unsupportedReason: UNSUPPORTED_PENDING_CANARY,
   },
   {
     operation: 'set_stock_transfer',
     classification: 'stock',
-    staticSupport: false,
+    staticSupport: true,
     idempotency: 'required',
-    unsupportedReason: UNSUPPORTED_PENDING_CANARY,
   },
   {
     operation: 'set_stock_count',
     classification: 'stock',
-    staticSupport: false,
+    staticSupport: true,
     idempotency: 'required',
-    unsupportedReason: UNSUPPORTED_PENDING_CANARY,
   },
   {
     operation: 'set_manufacturing_order',
     classification: 'stock',
-    staticSupport: false,
+    staticSupport: true,
     idempotency: 'required',
-    unsupportedReason: UNSUPPORTED_PENDING_CANARY,
   },
   {
     operation: 'reconcile_manufacturing_order_serials',
     classification: 'stock',
-    staticSupport: false,
+    staticSupport: true,
     idempotency: 'required',
-    unsupportedReason: UNSUPPORTED_PENDING_CANARY,
   },
 ] as const;
 

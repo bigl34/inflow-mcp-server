@@ -784,11 +784,12 @@ describe('production component resolver facade', () => {
   );
 
   it.each([
-    ['nested', true, true],
-    ['direct', false, false],
+    ['nested', true, true, '1'],
+    ['direct', false, true, '1'],
+    ['direct without sales-order demand', false, false, '0'],
   ])(
-    '%s components use dual reservation projections only when the exact current-MO line is nested',
-    async (_label, nested, shouldRegister) => {
+    '%s components credit an owned build reservation the current MO provably retires',
+    async (_label, nested, shouldRegister, finishedReservedForSales) => {
       const createResolver = exported('createCoordinatorComponentResolver');
       const registrations: unknown[] = [];
       const blocks: unknown[] = [];
@@ -806,6 +807,7 @@ describe('production component resolver facade', () => {
         coordinator: {
           snapshot: () => ({
             ...snapshot,
+            rootLineId: 'root-line',
             expectedComponents: [
               {
                 rawLineId: 'mudguard-line',
@@ -834,7 +836,16 @@ describe('production component resolver facade', () => {
           }),
           getRunArtifact: (_operationId: string, artifactType: string) =>
             artifactType === 'begin_plan'
-              ? { artifact: { locationId: 'location-1' } }
+              ? {
+                  artifact: {
+                    locationId: 'location-1',
+                    begin: {
+                      normalizedIdentity: {
+                        finishedProductId: 'finished-product',
+                      },
+                    },
+                  },
+                }
               : undefined,
         },
         client: {
@@ -869,6 +880,15 @@ describe('production component resolver facade', () => {
                     ]
                     : [componentLine],
                 }],
+              };
+            }
+            if (path === '/products/finished-product/summary') {
+              return {
+                productId: 'finished-product',
+                quantityOnHand: '0',
+                quantityAvailable: '-1',
+                quantityReservedForSales: finishedReservedForSales,
+                locationSummaries: [],
               };
             }
             return path.endsWith('/summary')

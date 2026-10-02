@@ -1,13 +1,13 @@
-import { chmod, mkdtemp } from 'node:fs/promises';
-import { tmpdir } from 'node:os';
-import { join } from 'node:path';
 import { describe, expect, it, vi } from 'vitest';
 import type { InflowClient } from '../client/inflow.js';
 import type { InflowConfig } from '../config.js';
 import { canonicalHash } from '../core/canonical-json.js';
 import { MutationJournal, type MutationJournalRecord } from '../core/mutation-journal.js';
+import { createTempStateDir } from '../core/temp-state.fixtures.js';
 import { priceSemantic, type ProductPriceState } from '../services/product-prices.js';
 import { productWriteSemantic } from './safe-standard-writes.js';
+import { customFieldDefinitionsList, TENANT_CUSTOM_FIELD_DEFINITIONS } from './custom-field-kinds.fixtures.js';
+import { indexCustomFieldKinds } from './custom-field-kinds.js';
 import {
   mutationStatusEnvelope,
   reconcileMutation,
@@ -16,15 +16,14 @@ import {
 
 describe('mutation status reconciliation', () => {
   it('reconciles an ambiguous bounded product mutation without redispatch', async () => {
-    const stateDir = await mkdtemp(join(tmpdir(), 'inflow-product-status-'));
-    await chmod(stateDir, 0o700);
+    const stateDir = await createTempStateDir('inflow-product-status-');
     const journal = new MutationJournal(stateDir);
     const state = {
       productId: 'p-1', name: 'Product', sku: 'SKU', isActive: true, timestamp: 't-2',
       customFields: { custom1: 'https://admin.shopify.com/store/example/products/1', custom2: 'preserved' },
     };
     const adapterVersion = 'product/safe-v2';
-    const desiredHash = canonicalHash(productWriteSemantic(state), `semantic/product/${adapterVersion}`);
+    const desiredHash = canonicalHash(productWriteSemantic(state, {}, adapterVersion), `semantic/product/${adapterVersion}`);
     const record: MutationJournalRecord = {
       schemaVersion: 'mutation-journal/v1', operationId: 'op-product-1', tenantFingerprint: 'tenant',
       resourceType: 'product', resourceId: 'p-1', adapterVersion, desiredHash,
@@ -33,16 +32,92 @@ describe('mutation status reconciliation', () => {
       steps: [{ stepId: 'write', kind: 'apply', intentHash: desiredHash, plannedIds: [], state: 'unknown', updatedAt: new Date().toISOString(), invalidationTags: ['product:p-1'] }],
     };
     await journal.put(record);
-    const client = { get: vi.fn(async () => ({ ...state })) } as unknown as InflowClient;
+    const client = { getList: customFieldDefinitionsList(), get: vi.fn(async () => ({ ...state })) } as unknown as InflowClient;
     const result = await reconcileMutation(client, journal, record);
     expect(client.get).toHaveBeenCalledWith('/products/p-1');
     expect(result.reconciliation).toMatchObject({ attempted: true, advanced: true, provenState: 'applied_verified' });
     expect(result.record.state).toBe('applied_verified');
   });
 
+  it('reconciles a product whose checkbox and date custom fields read back as provider text', async () => {
+    const stateDir = await createTempStateDir('inflow-product-status-coercion-');
+    const journal = new MutationJournal(stateDir);
+    const productKinds = indexCustomFieldKinds(TENANT_CUSTOM_FIELD_DEFINITIONS, 'product');
+    const desired = {
+      productId: 'p-1', name: 'Fixture Component E', sku: 'TEST-COMPONENT-005', isActive: true, timestamp: 't-1',
+      customFields: { custom1: '', custom3: true, custom4: '2026-09-18T00:00:00.000Z', custom5: false },
+    };
+    const readback = {
+      ...desired, timestamp: 't-2',
+      customFields: { custom1: '', custom3: 'True', custom4: '09/18/2026 00:00:00', custom5: 'False' },
+    };
+    const adapterVersion = 'product/safe-v4';
+    const desiredHash = canonicalHash(productWriteSemantic(desired, productKinds, adapterVersion), `semantic/product/${adapterVersion}`);
+    const record: MutationJournalRecord = {
+      schemaVersion: 'mutation-journal/v1', operationId: 'op-product-coercion', tenantFingerprint: 'tenant',
+      resourceType: 'product', resourceId: 'p-1', adapterVersion, desiredHash,
+      state: 'applied_unverified', createdAt: new Date().toISOString(), updatedAt: new Date().toISOString(),
+      affectedResources: [{ type: 'product', id: 'p-1' }], invalidationTags: ['product:p-1', 'bom:p-1'],
+      steps: [{ stepId: 'write', kind: 'apply', intentHash: desiredHash, plannedIds: [], state: 'failed', errorCode: 'VERIFICATION_MISMATCH', updatedAt: new Date().toISOString(), invalidationTags: ['product:p-1', 'bom:p-1'] }],
+    };
+    await journal.put(record);
+    const client = { getList: customFieldDefinitionsList(), get: vi.fn(async () => ({ ...readback })) } as unknown as InflowClient;
+    const result = await reconcileMutation(client, journal, record);
+    expect(result.reconciliation).toMatchObject({ attempted: true, advanced: true, provenState: 'applied_verified' });
+    expect(result.record.state).toBe('applied_verified');
+    expect(result.record.steps[0]).toMatchObject({ stepId: 'write', state: 'verified' });
+    expect(result.record.steps[0].errorCode).toBeUndefined();
+    expect(mutationStatusEnvelope(result.record)).toMatchObject({ applicationState: 'applied_verified', verified: true, completedSteps: ['write'] });
+    expect(mutationStatusEnvelope(result.record).failedStep).toBeUndefined();
+
+    const drifted = { getList: customFieldDefinitionsList(), get: vi.fn(async () => ({ ...readback, customFields: { ...readback.customFields, custom3: 'False' } })) } as unknown as InflowClient;
+    const notObserved = await reconcileMutation(drifted, journal, { ...record, state: 'applied_unverified' });
+    expect(notObserved.reconciliation).toMatchObject({ attempted: true, advanced: false, reasonCode: 'DESIRED_STATE_NOT_OBSERVED' });
+  });
+
+  it('reconciles a legacy product/safe-v3 record only when its raw desired projection already equals the canonical readback', async () => {
+    const stateDir = await createTempStateDir('inflow-product-status-legacy-');
+    const journal = new MutationJournal(stateDir);
+    const adapterVersion = 'product/safe-v3';
+    const legacyRawSemantic = (value: Record<string, unknown>) => productWriteSemantic(value, {}, adapterVersion);
+    const readback = {
+      productId: 'p-1', name: 'Fixture Component E', sku: 'TEST-COMPONENT-005', isActive: true, timestamp: 't-2',
+      customFields: { custom1: '', custom3: 'True', custom4: '09/18/2026 00:00:00', custom5: 'False' },
+    };
+    const legacyRecord = (operationId: string, desired: Record<string, unknown>): MutationJournalRecord => {
+      const desiredHash = canonicalHash(legacyRawSemantic(desired), `semantic/product/${adapterVersion}`);
+      return {
+        schemaVersion: 'mutation-journal/v1', operationId, tenantFingerprint: 'tenant',
+        resourceType: 'product', resourceId: 'p-1', adapterVersion, desiredHash,
+        state: 'applied_unverified', createdAt: new Date().toISOString(), updatedAt: new Date().toISOString(),
+        affectedResources: [{ type: 'product', id: 'p-1' }], invalidationTags: ['product:p-1', 'bom:p-1'],
+        steps: [{ stepId: 'write', kind: 'apply', intentHash: desiredHash, plannedIds: [], state: 'failed', errorCode: 'VERIFICATION_MISMATCH', updatedAt: new Date().toISOString(), invalidationTags: ['product:p-1', 'bom:p-1'] }],
+      };
+    };
+    const undatedReadback = { ...readback, customFields: { ...readback.customFields, custom4: '' } };
+    const undatedClient = { getList: customFieldDefinitionsList(), get: vi.fn(async () => ({ ...undatedReadback })) } as unknown as InflowClient;
+    const booleanOnly = legacyRecord('op-legacy-boolean', {
+      ...undatedReadback, timestamp: 't-1',
+      customFields: { custom1: '', custom3: true, custom4: '', custom5: false },
+    });
+    await journal.put(booleanOnly);
+    const advanced = await reconcileMutation(undatedClient, journal, booleanOnly);
+    expect(advanced.reconciliation).toMatchObject({ attempted: true, advanced: true, provenState: 'applied_verified' });
+
+    const datedClient = { getList: customFieldDefinitionsList(), get: vi.fn(async () => ({ ...readback })) } as unknown as InflowClient;
+    for (const [operationId, custom4] of [['op-legacy-iso-date', '2026-09-18T00:00:00.000Z'], ['op-legacy-provider-date', '09/18/2026 00:00:00']]) {
+      const dated = legacyRecord(operationId, {
+        ...readback, timestamp: 't-1',
+        customFields: { custom1: '', custom3: true, custom4, custom5: false },
+      });
+      await journal.put(dated);
+      const stuck = await reconcileMutation(datedClient, journal, dated);
+      expect(stuck.reconciliation).toMatchObject({ attempted: true, advanced: false, reasonCode: 'DESIRED_STATE_NOT_OBSERVED' });
+    }
+  });
+
   it('advances an ambiguous supported mutation only after desired-state readback', async () => {
-    const stateDir = await mkdtemp(join(tmpdir(), 'inflow-status-'));
-    await chmod(stateDir, 0o700);
+    const stateDir = await createTempStateDir('inflow-status-');
     const journal = new MutationJournal(stateDir);
     const state: ProductPriceState = {
       productId: 'p-1', name: 'Product', sku: 'SKU', isActive: true, timestamp: 't-2',
@@ -58,7 +133,7 @@ describe('mutation status reconciliation', () => {
       steps: [{ stepId: 'write', kind: 'apply', intentHash: desiredHash, plannedIds: [], state: 'unknown', updatedAt: new Date().toISOString(), invalidationTags: ['prices:p-1'] }],
     };
     await journal.put(record);
-    const client = { get: vi.fn(async () => ({ ...state })) } as unknown as InflowClient;
+    const client = { getList: customFieldDefinitionsList(), get: vi.fn(async () => ({ ...state })) } as unknown as InflowClient;
     const result = await reconcileMutation(client, journal, record);
     expect(result.reconciliation).toMatchObject({ attempted: true, advanced: true, provenState: 'applied_verified' });
     expect(result.record.state).toBe('applied_verified');
@@ -73,8 +148,7 @@ describe('mutation status reconciliation', () => {
   });
 
   it('reports status v2 with explicit product-manufacturing policy and the dedicated pick-batch gate', async () => {
-    const stateDir = await mkdtemp(join(tmpdir(), 'inflow-status-gates-'));
-    await chmod(stateDir, 0o700);
+    const stateDir = await createTempStateDir('inflow-status-gates-');
     let statusHandler:
       | ((input: { probeApi: boolean }) => Promise<{
           content: Array<{ type: string; text: string }>;
@@ -186,8 +260,7 @@ describe('mutation status reconciliation', () => {
     });
     expect(payload.writePolicies.safe.operations.reconcile_manufacturing_order_serials).toMatchObject({
       classification: 'stock',
-      staticSupport: false,
-      effectiveApplyEnabled: false,
+      staticSupport: true,
     });
     expect(payload.writePolicies.safe.operations['manufacturing-pick-batch-v1']).toMatchObject({
       classification: 'coordinator',
