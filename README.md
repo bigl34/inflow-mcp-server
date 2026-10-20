@@ -507,6 +507,7 @@ creation, journalling, or dispatch; a stale build, tenant, source, target, or
 state requires a new preview and confirmation.
 
 
+
 `INFLOW_ENABLE_MANUFACTURING_WRITES` and
 `attestations/manufacturing.json` are deprecated compatibility inputs and do
 not authorize or block `set_product_manufacturing_config` or
@@ -533,8 +534,11 @@ not live-executable. Keep
 canary and use a dedicated idle `INFLOW_RATE_LIMIT=20` process. The command
 uses:
 
+- `INFLOW_MANUFACTURING_PICK_BATCH_CANARY_SCENARIO_JSON` for the strict v2
   two-subject manifest (`complete` has no operations; `staging` has operations);
+- `INFLOW_MANUFACTURING_PICK_BATCH_CANARY_APPROVALS_JSON` for the array of
   stage approvals printed from the current checkpoint/plan;
+- `INFLOW_MANUFACTURING_PICK_BATCH_CANARY_RUNTIME_MATERIAL_JSON` for reviewed
   component intents, canary-only component serials, sentinel exclusion
   evidence, and exact expected rejection status/code pairs. V2 accepts only a
   predeclared HTTP status in `400`, `409`, `412`, or `422` plus a non-empty
@@ -577,6 +581,10 @@ inactive-product price fixture must start inactive with no price rows, and its
 two exact pricing schemes must be safe for disposable test prices:
 
 ```bash
+INFLOW_CANARY_APPROVED=true \
+INFLOW_CANARY_RESOURCE_ID="inactive-product-id" \
+INFLOW_CANARY_BASELINE_PRICING_SCHEME_ID="baseline-scheme-id" \
+INFLOW_CANARY_PRICING_SCHEME_ID="candidate-scheme-id" \
 npm run probe:domain -- prices "inactive-product-id" --approve-external-write
 ```
 
@@ -584,6 +592,8 @@ This probe exercises the production price serializer (including server-assigned
 row IDs), stale timestamps, preservation, remove/clear, and cleanup, then emits
 release evidence. Product-group and MO-serial release canaries use the same
 entry point with `product-groups` or `mo-serials`, exact
+`INFLOW_CANARY_RESOURCE_ID`, and the reviewed
+`INFLOW_CANARY_PRODUCT_GROUP_FIXTURE` or `INFLOW_CANARY_MO_SERIAL_FIXTURE` JSON.
 They prove full-array preservation/compensation or serial/inventory net-zero
 restoration respectively. A passing result does not open a runtime gate or make
 an adapter supported; release still requires a code change and normal review.
@@ -740,4 +750,3 @@ npm run test:coverage
 ## License
 
 MIT
-

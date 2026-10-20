@@ -13,3 +13,4 @@ config.json
 *.log
 *.tmp
 data/
+.claude/worktrees/

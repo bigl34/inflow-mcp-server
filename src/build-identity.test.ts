@@ -27,4 +27,3 @@ describe('build identities', () => {
     expect(verifyBuildIdentityOverride('INFLOW_PROBE_BUILD', 'running-build', 'running-build')).toBe('running-build');
   });
 });
-
