@@ -9,7 +9,7 @@ permissions:
 
 jobs:
   verify-publisher-commit:
-    runs-on: ubicloud-standard-4-ubuntu-2404
+    runs-on: ubuntu-latest
     steps:
       - name: Require publisher commit marker
         env:
